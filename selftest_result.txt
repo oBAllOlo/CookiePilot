@@ -1,0 +1,2 @@
+templates: 16 OK | digit templates: 10/10
+RESULT: PASS

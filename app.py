@@ -82,6 +82,19 @@ class App:
         tk.Label(cfg, text="(0 = ไม่จำกัด รันจนกดหยุด)", bg="#34344a", fg="#9a9ab0",
                  font=("Segoe UI", 8)).grid(row=2, column=2, sticky="w", padx=6)
 
+        tk.Label(cfg, text="โหมด:", bg="#34344a", fg="#dddde8",
+                 font=("Segoe UI", 9)).grid(row=3, column=0, sticky="w", padx=8, pady=6)
+        # normalize แบบเดียวกับ CookieBot (กันเคส "Box"/true ใน settings.json ทำ GUI เด้งกลับ coin)
+        saved_mode = str(config.BOT_MODE or "coin").strip().lower()
+        self.mode_var = tk.StringVar(value=saved_mode if saved_mode in ("coin", "box") else "coin")
+        mode_fr = tk.Frame(cfg, bg="#34344a")
+        mode_fr.grid(row=3, column=1, columnspan=2, sticky="w", padx=4)
+        for txt, val in (("รีโรลเหรียญ", "coin"), ("วิ่งเก็บกล่อง (Fast Start)", "box")):
+            tk.Radiobutton(mode_fr, text=txt, value=val, variable=self.mode_var,
+                           bg="#34344a", fg="#dddde8", selectcolor="#1e1e28",
+                           activebackground="#34344a", activeforeground="#ffffff",
+                           font=("Segoe UI", 9)).pack(side="left", padx=(0, 10))
+
         # --- สถานะ + ปุ่มหลัก ---
         self.status_var = tk.StringVar(value="● หยุดอยู่")
         self.status_lbl = tk.Label(r, textvariable=self.status_var,
@@ -187,20 +200,22 @@ class App:
             max_loops = 0
         self._max_loops = max_loops
 
+        mode = self.mode_var.get()
         self.stop_event = threading.Event()
         self.bot = CookieBot(self.adb, log=self._enqueue,
                              on_coins=self._on_coins, on_loop=self._on_loop,
-                             stop_event=self.stop_event)
+                             stop_event=self.stop_event, mode=mode)
 
         self.running = True
         self.toggle_btn.config(text="■  หยุดบอท", bg="#ff5252", activebackground="#e53935")
         self.status_var.set("● กำลังทำงาน")
         self.status_lbl.config(fg="#69f0ae")
         self.coins_var.set("🪙 เหรียญรอบล่าสุด: -    รวม: 0")
+        mode_txt = "วิ่งเก็บกล่อง (Fast Start)" if mode == "box" else "รีโรลเหรียญ"
         if max_loops:
-            self._enqueue(f"\n[app] ===== เริ่มบอท (จะเล่น {max_loops} รอบแล้วหยุด) =====")
+            self._enqueue(f"\n[app] ===== เริ่มบอท โหมด{mode_txt} (จะเล่น {max_loops} รอบแล้วหยุด) =====")
         else:
-            self._enqueue("\n[app] ===== เริ่มบอท (ไม่จำกัดรอบ) =====")
+            self._enqueue(f"\n[app] ===== เริ่มบอท โหมด{mode_txt} (ไม่จำกัดรอบ) =====")
 
         def worker():
             try:
@@ -209,7 +224,8 @@ class App:
                     return
                 # จำค่าที่ใช้ได้จริงไว้ เปิดโปรแกรมครั้งหน้าไม่ต้องกรอกใหม่
                 config.save_settings({"DEFAULT_ADB": self.adb.path,
-                                      "DEFAULT_DEVICE": self.adb.device})
+                                      "DEFAULT_DEVICE": self.adb.device,
+                                      "BOT_MODE": mode})
                 self.bot.run(max_loops)
             except Exception as e:
                 import traceback
@@ -263,8 +279,10 @@ def _selftest():
     try:
         tpls = [config.IMG_TARGET_ITEM, config.IMG_OK_BUTTON, config.IMG_RESULT, config.IMG_RELAY,
                 config.IMG_BOOST_SCREEN, config.IMG_LOBBY_PLAY, config.IMG_FRIEND_POPUP,
-                config.IMG_MODE_POPUP, config.IMG_SENDLIFE_POPUP,
-                config.IMG_MULTI_CHECK] + [it["check_img"] for it in config.BOOST_ITEMS]
+                config.IMG_MODE_POPUP, config.IMG_SENDLIFE_POPUP, config.IMG_MULTI_CHECK,
+                config.IMG_FAST_START, config.IMG_FAST_START_BUY,
+                config.IMG_FAST_START_ACTIVATE] \
+               + [it["check_img"] for it in config.BOOST_ITEMS]
         for t in tpls:
             vision.load_template(t)
         n = len(vision.CoinReader(log=lambda m: None)._load_digits())

@@ -1,14 +1,20 @@
 """
-bot.py — บอทหลัก (State Machine 3 สถานะ)
-========================================
+bot.py — บอทหลัก (State Machine 3 สถานะ, 2 โหมด)
+================================================
+โหมด "coin" (เดิม — รีโรลเหรียญ):
   STATE 1 REROLL : นำทางไปหน้าเตรียมตัว → ใช้ Multi-Buy สุ่มหา Double Coins → ติ๊กบูสต์ → กด Play
   STATE 2 RUN    : กดกระโดดสุ่มดีเลย์ + คอยกด relay + กันจอค้าง → จนเจอหน้า Result
   STATE 3 RESULT : กด OK กลับล็อบบี้ + อ่านจำนวนเหรียญบันทึกลง CSV → วนกลับ STATE 1
 
+โหมด "box" (วิ่งเก็บกล่อง — Fast Start):
+  STATE 1 PREP   : นำทางไปหน้าเตรียมตัว → ซื้อ Fast Start (ไม่รีโรล) → ติ๊กบูสต์ → กด Play
+  STATE 2 RUN    : ไม่กดอะไรเลย ปล่อยคุกกี้วิ่งเก็บกล่องเอง (ไม่กดกระโดด/ไม่กดนินจา relay)
+  STATE 3 RESULT : เหมือนโหมดเดิม
+
 ใช้งาน:
     from adb import Adb
     from bot import CookieBot
-    bot = CookieBot(Adb())
+    bot = CookieBot(Adb(), mode="box")   # ไม่ใส่ mode = ใช้ config.BOT_MODE
     bot.run(max_loops=10)      # 0 = ไม่จำกัด
 หยุดด้วย bot.stop.set()  (หรือส่ง threading.Event เข้ามาเอง)
 """
@@ -35,7 +41,7 @@ class State(Enum):
 
 class CookieBot:
     def __init__(self, adb, log=print, on_coins=None, on_loop=None,
-                 stop_event=None):
+                 stop_event=None, mode=None):
         self.adb = adb
         self.log = log
         self.on_coins = on_coins          # callback(coins, total) — อัปเดต GUI
@@ -43,6 +49,12 @@ class CookieBot:
         self.stop = stop_event or threading.Event()
         self.coin_reader = vision.CoinReader(log)
         self.coin_total = 0
+        # โหมดบอท: "coin" = รีโรลเหรียญ (เดิม) / "box" = วิ่งเก็บกล่อง (Fast Start)
+        # str() กันค่าใน settings.json ที่ไม่ใช่ string (เช่น true/123) ทำ .lower() พัง
+        self.mode = str(mode or config.BOT_MODE or "coin").strip().lower()
+        if self.mode not in ("coin", "box"):
+            self.log(f"[bot] ไม่รู้จักโหมด '{self.mode}' → ใช้โหมด coin แทน")
+            self.mode = "coin"
 
     # ============================================================
     # ตัวช่วย
@@ -351,6 +363,151 @@ class CookieBot:
                 self.log("[WARN] jump thread ยังไม่หยุดใน 5s (adb อาจช้า) — ไปต่อ")
 
     # ============================================================
+    # โหมดวิ่งเก็บกล่อง (box) — STATE 1: ซื้อ Fast Start (ไม่รีโรล)
+    # ============================================================
+    def ensure_fast_start(self):
+        """
+        ซื้อ Fast Start บนหน้าเตรียมตัว (ลำดับตามพฤติกรรมเกมที่วัดจากจอจริง):
+          1) แตะไอคอน Fast Start → แผงซื้อเปิดด้านขวา (ถ้าเปิดค้างอยู่แล้วก็แค่เลือกซ้ำ)
+          2) รอปุ่ม Buy → กดซื้อ (เกมหักเหรียญทันที + เด้ง toast "Purchase complete!" กลางจอ)
+          3) toast หายเองใน ~3 วิ — สำคัญ: "แผงซื้อไม่ปิดเอง" ปุ่ม Buy ยังโชว์อยู่หลังซื้อ
+             ซึ่งเป็นเรื่องปกติ ไม่ใช่ซื้อไม่สำเร็จ และแผงนี้ไม่บังบูสต์/ปุ่ม Play จึงไม่ต้องปิด
+        คืน True เมื่อซื้อแล้วหน้าจอกลับมาปกติ (หรือไม่มีปุ่ม Buy = อาจเปิดใช้อยู่แล้ว)
+        """
+        screen = self._cap()
+        slot = vision.find_multiscale(screen, config.IMG_FAST_START,
+                                      config.FAST_START_THRESHOLD)
+        if slot.found:
+            self.log(f"[box] เจอไอคอน Fast Start (score={slot.score:.2f}) → แตะเลือก")
+            self.adb.tap(*slot.center)
+        elif config.BTN_FAST_START:
+            self.log(f"[box] หาไอคอน Fast Start ไม่เจอ (best={slot.score:.2f}) "
+                     f"→ ใช้พิกัดสำรอง BTN_FAST_START {tuple(config.BTN_FAST_START)}")
+            self.adb.tap(*config.BTN_FAST_START)
+        else:
+            self.log(f"[box][WARN] หาไอคอน Fast Start ไม่เจอ (best={slot.score:.2f}) → ข้ามการซื้อ "
+                     "(แคป templates/fast_start_item.png ใหม่ หรือตั้ง BTN_FAST_START ใน settings.json)")
+            return False
+
+        # รอปุ่ม Buy ในแผงด้านขวา
+        buy = None
+        start = time.time()
+        while time.time() - start < config.FAST_START_BUY_TIMEOUT:
+            if self._stopping():
+                return False
+            time.sleep(0.6)
+            m = vision.find_multiscale(self._cap(), config.IMG_FAST_START_BUY,
+                                       config.FAST_START_THRESHOLD)
+            if m.found:
+                buy = m
+                break
+        if buy is None:
+            if vision.find(self._cap(), config.IMG_BOOST_SCREEN).found:
+                self.log("[box] ไม่เจอปุ่ม Buy แต่หน้าเตรียมตัวปกติ — อาจเปิดใช้อยู่แล้ว → ไปต่อ")
+                return True
+            self.log("[box][WARN] ไม่เจอปุ่ม Buy และมีอะไรบังหน้าเตรียมตัว → ให้ระบบนำทางแก้ต่อ "
+                     "(ถ้าเกิดซ้ำ แคป templates/fast_start_buy.png ใหม่จากจอจริง)")
+            return False
+
+        self.log(f"[box] เจอปุ่ม Buy (score={buy.score:.2f}) → กดซื้อ Fast Start")
+        self.adb.tap(*buy.center)
+
+        # หลังซื้อ: toast "Purchase complete!" เด้งทับกลางจอแล้วหายเองใน ~3 วิ
+        # ห้ามตีความ "ปุ่ม Buy ยังอยู่" เป็นซื้อไม่สำเร็จ — แผงซื้อเปิดค้างเป็นเรื่องปกติ
+        self.log("[box] กดซื้อแล้ว → รอ toast 'Purchase complete!' หายเอง (~3 วิ)")
+        time.sleep(2.0)
+        deadline = time.time() + config.FAST_START_TOAST_TIMEOUT
+        while time.time() < deadline:
+            if self._stopping():
+                return False
+            if vision.find(self._cap(), config.IMG_BOOST_SCREEN).found:
+                self.log("[box] ซื้อ Fast Start เรียบร้อย (แผงซื้อเปิดค้างไว้ได้ ไม่บังปุ่มอะไร)")
+                return True
+            time.sleep(0.8)
+        self.log("[box][WARN] หน้าจอยังไม่กลับมาปกติหลังซื้อ → ให้ระบบนำทางแก้ต่อ")
+        return False
+
+    def state_prepare_box(self):
+        self.log("\n===== [STATE 1] PREP — ซื้อ Fast Start (โหมดวิ่งเก็บกล่อง ไม่รีโรล) =====")
+        if not self.ensure_on_boost_screen():
+            self.log("[WARN] นำทางยังไม่สำเร็จ → รอแล้ววนลองใหม่")
+            time.sleep(3)
+            return State.REROLL
+
+        self.ensure_fast_start()
+
+        # กลับให้ถึงหน้าเตรียมตัวชัวร์ ๆ ก่อนติ๊กบูสต์ (เผื่อมีป๊อปอัปหลังซื้อ)
+        if not self.ensure_on_boost_screen():
+            self.log("[WARN] หลังซื้อ Fast Start กลับหน้าเตรียมตัวไม่ได้ → วนลองใหม่")
+            time.sleep(3)
+            return State.REROLL
+
+        self.ensure_boosts_selected()
+        self.log("[OK] → กด Play เริ่มวิ่งเก็บกล่อง")
+        self.adb.tap(*config.BTN_PLAY)
+        time.sleep(config.DELAY_AFTER_PLAY)
+        return State.RUN
+
+    # ============================================================
+    # โหมดวิ่งเก็บกล่อง (box) — STATE 2: ปล่อยวิ่งเอง ไม่กดอะไรเลย
+    # ============================================================
+    def state_run_box(self):
+        self.log("\n===== [STATE 2] RUN — กดเปิด Fast Start แล้วปล่อยคุกกี้วิ่งเอง (ไม่กระโดด/ไม่กดนินจา) =====")
+        start_time = time.time()
+        last_sig = None
+        last_change = time.time()
+        relay_was_visible = False
+
+        while not self._stopping():
+            t = time.time() - start_time
+            screen = self._cap()
+
+            # ช่วงต้นเกม: เกมขึ้นปุ่ม "Tap to activate Fast Start Boost!" (~5-7 วิแรก
+            # และค้างแค่ ~3 วิ) → ต้องกดถึงจะได้ Magnet Aura วิ่งเก็บของทั้งด่าน 1
+            if t < config.FAST_START_ACTIVATE_WINDOW:
+                act = vision.find(screen, config.IMG_FAST_START_ACTIVATE,
+                                  config.FAST_START_THRESHOLD)
+                if act.found:
+                    self.log(f"    [box] เจอปุ่ม activate Fast Start (score={act.score:.2f}) → กดเปิดบูสต์")
+                    self.adb.tap(*act.center)
+                    time.sleep(0.4)
+                    continue
+
+            # ตรวจจอค้าง (inactive) — เฉพาะเมื่อเปิดโหมด (เหมือน state_run เดิม)
+            if config.PREVENT_INACTIVE and screen is not None:
+                sig = vision.frame_signature(screen)
+                if last_sig is not None and float(abs(sig - last_sig).mean()) < config.FREEZE_DIFF:
+                    if time.time() - last_change >= config.FREEZE_SECS:
+                        self.log("[recover] จอค้าง/ป๊อปอัป → กด Confirm กลางจอ")
+                        self.adb.tap(*config.BTN_INACTIVE_CONFIRM)
+                        time.sleep(1.2)
+                        last_sig = None
+                        last_change = time.time()
+                        continue
+                else:
+                    last_change = time.time()
+                last_sig = sig
+
+            # เจอนินจา relay → ตามสเปกโหมดนี้ "ไม่กด" (ไม่เปลี่ยนไม้ 2) — log ไว้เฉย ๆ
+            relay = vision.find(screen, config.IMG_RELAY, config.RELAY_THRESHOLD)
+            if relay.found and not relay_was_visible:
+                self.log(f"    [relay] เจอนินจา (score={relay.score:.3f}) → ไม่กด ปล่อยผ่าน")
+            relay_was_visible = relay.found
+
+            # เจอหน้า Result → ไป STATE 3
+            result = vision.find(screen, config.IMG_RESULT)
+            if result.found:
+                self.log(f"[OK] เจอหน้า Result (score={result.score:.3f}) → STATE 3")
+                return State.RESULT
+
+            if t >= config.RUN_STATE_TIMEOUT:
+                self.log(f"[WARN] State 2 เกิน {config.RUN_STATE_TIMEOUT}s → บังคับไป STATE 3")
+                return State.RESULT
+
+            time.sleep(config.RESULT_CHECK_INTERVAL)
+        return None
+
+    # ============================================================
     # STATE 3 — RESULT
     # ============================================================
     def record_result_coins(self, screen):
@@ -414,14 +571,16 @@ class CookieBot:
         current = State.REROLL
         loops_done = 0
         err_streak = 0
+        box_mode = self.mode == "box"
+        self.log(f"[bot] โหมด: {'วิ่งเก็บกล่อง (box — Fast Start)' if box_mode else 'รีโรลเหรียญ (coin)'}")
         try:
             while not self._stopping():
                 prev = current
                 try:
                     if current == State.REROLL:
-                        current = self.state_reroll()
+                        current = self.state_prepare_box() if box_mode else self.state_reroll()
                     elif current == State.RUN:
-                        current = self.state_run()
+                        current = self.state_run_box() if box_mode else self.state_run()
                     elif current == State.RESULT:
                         current = self.state_result()
                     err_streak = 0

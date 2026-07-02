@@ -35,6 +35,14 @@ LDPLAYER_ROOTS = [
 LDPLAYER_SUBDIRS = ["LDPlayer14", "LDPlayer9", "LDPlayer64", "LDPlayer4", ""]
 
 # ============================================================
+# โหมดบอท
+#   "coin" = โหมดเดิม: รีโรลหา Double Coins แล้วกดกระโดดเอง
+#   "box"  = วิ่งเก็บกล่อง: ซื้อ Fast Start แล้วปล่อยคุกกี้วิ่งเอง
+#            (ไม่กดกระโดด / ไม่กดนินจา relay)
+# ============================================================
+BOT_MODE = "coin"
+
+# ============================================================
 # ความไวการจับคู่ภาพ (template matching) — 0..1 ยิ่งสูงยิ่งเข้มงวด
 # ============================================================
 MATCH_THRESHOLD = 0.85
@@ -52,6 +60,9 @@ IMG_FRIEND_POPUP  = "templates/friend_popup.png"
 IMG_MODE_POPUP    = "templates/mode_popup.png"
 IMG_SENDLIFE_POPUP = "templates/sendlife_popup.png"
 IMG_MULTI_CHECK   = "templates/multi_check.png"     # เครื่องหมายถูกในหน้า Multi
+IMG_FAST_START     = "templates/fast_start_item.png" # ไอคอน Fast Start บนหน้าเตรียมตัว (โหมดเก็บกล่อง)
+IMG_FAST_START_BUY = "templates/fast_start_buy.png"  # ปุ่ม Buy ในแผงซื้อ Fast Start
+IMG_FAST_START_ACTIVATE = "templates/fast_start_activate.png"  # ปุ่ม "Tap to activate Fast Start Boost!" ตอนเริ่มวิ่ง
 
 # ป๊อปอัปที่ต้องปิด (กดปุ่มปิด X ที่พิกัด x)
 DISMISS_POPUPS = [
@@ -84,6 +95,16 @@ BTN_MULTI_CLOSE = (1043, 82)    # ปิดหน้า Multi
 MULTI_SELECT_TARGETS = [(285, 176)]   # พิกัดบูสต์ที่ยอมรับ (Double Coins)
 MULTI_CHECK_THRESHOLD = 0.70          # ความไวเช็คว่าติ๊กแล้วหรือยัง
 MULTIBUY_TIMEOUT = 40.0               # วินาที รอ multi-buy จนเจอ target
+
+# ============================================================
+# โหมดวิ่งเก็บกล่อง (BOT_MODE="box") — ซื้อ Fast Start ก่อนเริ่มวิ่ง
+# หมายเหตุจากจอจริง: แผงซื้อเปิดค้างด้านขวา (ไม่ปิดเองหลังซื้อ) และไม่บังปุ่มอื่น
+# ============================================================
+FAST_START_THRESHOLD   = 0.75  # ความไวหาไอคอน/ปุ่ม Buy
+BTN_FAST_START         = None  # พิกัดสำรองของไอคอน Fast Start ถ้าหา template ไม่เจอ (จอจริงอยู่ ~[242, 592])
+FAST_START_BUY_TIMEOUT = 6.0   # วินาที รอปุ่ม Buy โผล่หลังแตะไอคอน
+FAST_START_TOAST_TIMEOUT = 8.0 # วินาที รอ toast "Purchase complete!" หายแล้วหน้าจอกลับมาปกติ
+FAST_START_ACTIVATE_WINDOW = 30.0  # วินาทีแรกของการวิ่งที่คอยหาปุ่ม activate (จอจริง: โผล่ ~5-7 วิ ค้าง ~3 วิ)
 
 # ปุ่มในเกม (ตอนวิ่ง)
 BTN_JUMP  = (80, 670)    # ปุ่มกระโดด

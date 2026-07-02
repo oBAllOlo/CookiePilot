@@ -53,6 +53,37 @@ def find(screen, template_path, threshold=config.MATCH_THRESHOLD):
     return Match(False, None, max_val)
 
 
+def find_multiscale(screen, template_path, threshold=config.MATCH_THRESHOLD,
+                    scales=(1.0, 0.95, 1.05, 0.90, 1.10)):
+    """
+    เหมือน find() แต่ลองย่อ/ขยาย template หลายสเกล — ใช้กับ template ที่แคปมา
+    จากภาพนอกจอ adb (เช่นภาพแคปหน้าต่าง) ซึ่งสเกลอาจเพี้ยนจากจอจริงเล็กน้อย
+    คืน Match ของสเกลที่คะแนนดีที่สุด (เจอสเกลที่ชัวร์มากจะหยุดหาต่อ)
+    """
+    if screen is None:
+        return Match(False, None, 0.0)
+    tpl0 = load_template(template_path)
+    best_score, best_center = 0.0, None
+    for s in scales:
+        if s == 1.0:
+            tpl = tpl0
+        else:
+            interp = cv2.INTER_AREA if s < 1.0 else cv2.INTER_CUBIC
+            tpl = cv2.resize(tpl0, None, fx=s, fy=s, interpolation=interp)
+        th, tw = tpl.shape[:2]
+        if screen.shape[0] < th or screen.shape[1] < tw:
+            continue
+        res = cv2.matchTemplate(screen, tpl, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, max_loc = cv2.minMaxLoc(res)
+        if max_val > best_score:
+            best_score = max_val
+            best_center = (max_loc[0] + tw // 2, max_loc[1] + th // 2)
+        if best_score >= max(threshold, 0.95):
+            break
+    found = best_score >= threshold
+    return Match(found, best_center if found else None, best_score)
+
+
 def find_in_roi(screen, template_path, roi, threshold=config.MATCH_THRESHOLD):
     """
     หา template เฉพาะในกรอบ roi=(x1,y1,x2,y2)
