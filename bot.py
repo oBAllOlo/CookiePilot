@@ -507,8 +507,8 @@ class CookieBot:
             # ช่วงต้นเกม: เกมขึ้นปุ่ม "Tap to activate Fast Start Boost!" (~5-7 วิแรก
             # และค้างแค่ ~3 วิ) → ต้องกดถึงจะได้ Magnet Aura วิ่งเก็บของทั้งด่าน 1
             if t < config.FAST_START_ACTIVATE_WINDOW:
-                act = vision.find(screen, config.IMG_FAST_START_ACTIVATE,
-                                  config.FAST_START_THRESHOLD)
+                act = vision.find_multiscale(screen, config.IMG_FAST_START_ACTIVATE,
+                                             config.FAST_START_THRESHOLD)
                 if act.found:
                     self.log(f"    [box] เจอปุ่ม activate Fast Start (score={act.score:.2f}) → กดเปิดบูสต์")
                     self.adb.tap(*act.center)
