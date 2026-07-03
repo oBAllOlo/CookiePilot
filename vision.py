@@ -6,6 +6,7 @@ vision.py — งานด้านภาพทั้งหมด (OpenCV)
   - frame_signature() : ย่อเฟรมไว้เทียบว่า "จอนิ่ง/ค้าง" หรือไม่
   - CoinReader    : อ่านจำนวนเหรียญบนหน้า Result ด้วย template เลข 0-9
 """
+import os
 from collections import namedtuple
 
 import cv2
@@ -22,13 +23,28 @@ _TEMPLATE_CACHE = {}
 
 
 def load_template(path):
-    """โหลด template (BGR) พร้อมแคช — ไม่เจอไฟล์จะโยน FileNotFoundError"""
+    """โหลด template (BGR) พร้อมแคช — ไม่เจอไฟล์โยน FileNotFoundError,
+    มีไฟล์แต่ decode ไม่ผ่าน (ไฟล์เสีย/ฟอร์แมตผิด) โยน ValueError"""
     if path not in _TEMPLATE_CACHE:
-        tpl = cv2.imread(resource_path(path), cv2.IMREAD_COLOR)
+        full = resource_path(path)
+        tpl = cv2.imread(full, cv2.IMREAD_COLOR)
         if tpl is None:
-            raise FileNotFoundError(f"ไม่พบไฟล์ template: {path}")
+            if not os.path.exists(full):
+                raise FileNotFoundError(f"ไม่พบไฟล์ template: {path}")
+            raise ValueError(f"ไฟล์ template เสีย/อ่านไม่ได้ (มีไฟล์แต่ decode ไม่ผ่าน): {path}")
         _TEMPLATE_CACHE[path] = tpl
     return _TEMPLATE_CACHE[path]
+
+
+def has_template(path):
+    """เช็คว่าไฟล์ template มีและอ่านได้จริง — ใช้ข้าม template ทางเลือกที่ยังไม่ได้แคป/ไฟล์เสีย"""
+    if path in _TEMPLATE_CACHE:
+        return True
+    try:
+        load_template(path)
+        return True
+    except (FileNotFoundError, ValueError):
+        return False
 
 
 def find(screen, template_path, threshold=config.MATCH_THRESHOLD):

@@ -49,6 +49,7 @@ class CookieBot:
         self.stop = stop_event or threading.Event()
         self.coin_reader = vision.CoinReader(log)
         self.coin_total = 0
+        self._tpl_warned = set()   # template ทางเลือกที่เตือนว่า "ยังไม่มีไฟล์" ไปแล้ว (เตือนครั้งเดียวพอ)
         # โหมดบอท: "coin" = รีโรลเหรียญ (เดิม) / "box" = วิ่งเก็บกล่อง (Fast Start)
         # str() กันค่าใน settings.json ที่ไม่ใช่ string (เช่น true/123) ทำ .lower() พัง
         self.mode = str(mode or config.BOT_MODE or "coin").strip().lower()
@@ -73,34 +74,57 @@ class CookieBot:
         พาไปอยู่หน้าเตรียมตัว (Buy some Boosts):
           - ปิดป๊อปอัปที่รู้จัก, ค้างหน้า Result → กด OK, อยู่ล็อบบี้ → กด Play,
             มีป๊อปอัปรางวัลบัง → กดปุ่ม Confirm กลางล่าง 2 จุด
+          - กด Play แล้วจอไม่ขยับ = มีป๊อปอัปแจ้งเตือน (modal เช่น "entered in a League")
+            กลืนการแตะทั้งจอทั้งที่ปุ่ม Play ยังมองเห็น → ไล่กด Confirm กลางจอสลับกับ Play
         (ไม่ใช้ปุ่ม Back เพราะที่ล็อบบี้จะเด้ง "Exit game?")
         คืน True ถ้าถึงหน้าเตรียมตัว
         """
         x_close_tries = 0
+        play_stuck = 0     # กด Play ไปแล้วกี่ครั้งโดยที่รอบถัดมายังเห็นล็อบบี้เดิม
+        confirm_idx = 0    # ไล่กดจุด Confirm กลางจอถึงจุดไหนแล้ว
         for i in range(max_tries):
             if self._stopping():
                 return False
             screen = self._cap()
+            if screen is None:
+                # แคปจอไม่ได้ (adb สะดุด) — ไม่ได้แปลว่าจอเปลี่ยน อย่ารีเซ็ตตัวนับ/กดมั่ว
+                self.log("[nav] แคปหน้าจอไม่ได้ (adb สะดุด) → รอแล้วลองใหม่")
+                time.sleep(1.0)
+                continue
 
-            # 1) ปิดป๊อปอัปที่รู้จัก
+            # 1) ปิดป๊อปอัปที่รู้จัก (template ไหนยังไม่มีไฟล์/อ่านไม่ได้ → ข้าม พร้อมเตือนครั้งเดียว)
             dismissed = False
+            popup_stuck = False
             for pop in config.DISMISS_POPUPS:
+                if not vision.has_template(pop["img"]):
+                    if pop["img"] not in self._tpl_warned:
+                        self._tpl_warned.add(pop["img"])
+                        self.log(f"[nav] ไม่มีไฟล์ {pop['img']} หรือไฟล์อ่านไม่ได้ (ป๊อปอัป {pop['name']}) → ข้าม "
+                                 "(แคปเพิ่มได้เพื่อให้ปิดป๊อปอัปแม่นขึ้น)")
+                    continue
                 m = vision.find(screen, pop["img"], pop["th"])
                 if not m.found:
                     continue
                 if x_close_tries < 3:
-                    self.log(f"[nav] เจอป๊อปอัป {pop['name']} (score={m.score:.2f}) → กดปิด X ที่ {pop['x']}")
+                    self.log(f"[nav] เจอป๊อปอัป {pop['name']} (score={m.score:.2f}) → กดปิดที่ {pop['x']}")
                     self.adb.tap(*pop["x"])
                     x_close_tries += 1
                     time.sleep(0.9)
+                    dismissed = True
                 else:
-                    self.log(f"[nav] กดปิด X หลายครั้งแล้วยังเจอ {pop['name']} → หยุดกด X")
-                    time.sleep(0.8)
-                dismissed = True
+                    # จุดปิดที่ตั้งไว้กดแล้วป๊อปอัปไม่หาย → เลิกกดจุดเดิม ปล่อยไหลลง
+                    # branch 4/5 ให้บันได Confirm กลางจอไล่จุดอื่นแทน
+                    self.log(f"[nav] กดปิด {pop['name']} หลายครั้งแล้วไม่หาย → ใช้บันได Confirm กลางจอแทน")
+                    popup_stuck = True
                 break
             if dismissed:
+                play_stuck = confirm_idx = 0
                 continue
-            x_close_tries = 0
+            if popup_stuck:
+                # รู้แน่ว่ามีป๊อปอัปค้างบังจอ → ไม่ต้องเสียรอบกด Play ให้ modal กลืน
+                play_stuck = max(play_stuck, config.NAV_PLAY_STUCK_TRIES)
+            else:
+                x_close_tries = 0
 
             # 2) ถึงหน้าเตรียมตัวแล้ว → จบ
             if vision.find(screen, config.IMG_BOOST_SCREEN).found:
@@ -114,15 +138,33 @@ class CookieBot:
                 self.log("[nav] ค้างหน้า Result → กด OK")
                 self.adb.tap(*ok.center)
                 time.sleep(2.5)
+                play_stuck = confirm_idx = 0
                 continue
 
             # 4) อยู่ล็อบบี้ → กด Play
+            #    ถ้ากด Play หลายครั้งแล้วยังวนเห็นล็อบบี้เดิม = มีป๊อปอัปแจ้งเตือนแบบ modal บัง
+            #    (เช่น League Notice) → ไล่กดจุด Confirm กลางจอทีละจุด สลับกับลองกด Play
             lobby = vision.find(screen, config.IMG_LOBBY_PLAY)
             if lobby.found:
+                if play_stuck >= config.NAV_PLAY_STUCK_TRIES:
+                    pts = config.NAV_POPUP_CONFIRM_POINTS
+                    if confirm_idx < len(pts):
+                        pt = pts[confirm_idx]
+                        confirm_idx += 1
+                        self.log(f"[nav] กด Play แล้วจอไม่ขยับ — น่าจะมีป๊อปอัปแจ้งเตือนบัง "
+                                 f"(เช่น League) → กด Confirm กลางจอ {pt}")
+                        self.adb.tap(*pt)
+                        # ให้รอบถัดไปลองกด Play ก่อน 1 ครั้ง — ถ้ายังไม่ขยับค่อยไล่จุดต่อไป
+                        play_stuck = config.NAV_PLAY_STUCK_TRIES - 1
+                        time.sleep(1.2)
+                        continue
+                    confirm_idx = 0   # ไล่ครบทุกจุดแล้ว → เริ่มชุดใหม่ (กด Play ต่อด้านล่าง)
+                play_stuck += 1
                 self.log(f"[nav] อยู่ล็อบบี้ (ครั้งที่ {i + 1}) → กด Play")
                 self.adb.tap(*lobby.center)
                 time.sleep(config.DELAY_AFTER_PLAY)
                 continue
+            play_stuck = confirm_idx = 0
 
             # 5) มีป๊อปอัปบัง → กดปุ่ม Confirm/Open all 2 จุด
             self.log(f"[nav] มีป๊อปอัปบัง (ครั้งที่ {i + 1}) → กด Confirm/Open all 2 จุด")

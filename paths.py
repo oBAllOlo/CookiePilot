@@ -6,7 +6,12 @@ import sys
 
 
 def resource_path(rel):
-    """path ของไฟล์ที่อ่านอย่างเดียว (template ฯลฯ) — รองรับ PyInstaller (_MEIPASS)"""
+    """path ของไฟล์ที่อ่านอย่างเดียว (template ฯลฯ) — รองรับ PyInstaller (_MEIPASS)
+    ถ้ามีไฟล์ชื่อเดียวกันวางข้าง .exe (เช่น templates/league_popup.png ที่แคปเพิ่ม
+    หรือ template ที่แคปทับของเดิม) จะใช้ไฟล์นั้นก่อน — ไม่ต้อง build ใหม่"""
+    cand = os.path.join(data_dir(), rel)
+    if os.path.exists(cand):
+        return cand
     base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base, rel)
 

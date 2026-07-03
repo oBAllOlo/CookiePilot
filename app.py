@@ -298,7 +298,11 @@ def _selftest():
             f.write(out + "\n")
     except Exception:
         pass
-    print(out)
+    try:
+        print(out)
+    except Exception:
+        # console ที่ไม่ใช่ UTF-8 (เช่น cp1252) พิมพ์ไทยไม่ได้ — อย่าให้ selftest ล้มเพราะ print
+        print(out.encode("ascii", "backslashreplace").decode("ascii"))
 
 
 def main():
