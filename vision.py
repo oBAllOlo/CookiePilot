@@ -47,6 +47,26 @@ def has_template(path):
         return False
 
 
+def validate_templates(paths, log=print, need_digits=True):
+    """ตรวจ template ที่จำเป็นครั้งเดียวก่อนเริ่มรัน (โหลด + แคชไว้เลย)
+    ไฟล์หาย/เสีย (เช่นเพิ่งแคปทับพลาด) จะได้เตือนชัด ๆ ทันที แทนที่จะวนพัง 30 รอบ
+    พร้อม traceback หรืออ่านเหรียญไม่ได้เงียบ ๆ ทั้งคืน
+    คืน (ok: bool, missing: list[str])"""
+    missing = []
+    for p in paths:
+        try:
+            load_template(p)
+        except (FileNotFoundError, ValueError) as e:
+            missing.append(p)
+            log(f"[check] template ใช้ไม่ได้: {p} — {e}")
+    if need_digits:
+        n = CoinReader(log).digit_count()
+        if n < 10:
+            log(f"[check] template เลขไม่ครบ ({n}/10) ใน {config.DIGIT_DIR}/ "
+                "→ อ่านจำนวนเหรียญไม่ได้ (จะลง CSV เป็นแถวว่างทุกรอบ)")
+    return (not missing, missing)
+
+
 def find(screen, template_path, threshold=config.MATCH_THRESHOLD):
     """
     หา template ในภาพ screen ด้วย matchTemplate (TM_CCOEFF_NORMED)
@@ -144,6 +164,10 @@ class CoinReader:
                 self._digits[d] = t.astype(np.float32)
         return self._digits
 
+    def digit_count(self):
+        """จำนวน template เลข 0-9 ที่โหลดได้จริง (ครบ = 10) — ใช้เช็คก่อนเริ่มรัน"""
+        return len(self._load_digits())
+
     @staticmethod
     def _segment_digits(crop):
         """
@@ -196,15 +220,28 @@ class CoinReader:
             for b in boxes:
                 glyph = cv2.resize(th[b[1]:b[3], b[0]:b[2]],
                                    (config.DIGIT_W, config.DIGIT_H)).astype(np.float32)
-                best_ch, best_sc = None, -1.0
+                best_ch, best_sc, second_sc = None, -1.0, -1.0
                 for ch, tpl in digits.items():
                     sc = cv2.matchTemplate(glyph, tpl, cv2.TM_CCOEFF_NORMED)[0][0]
                     if sc > best_sc:
-                        best_ch, best_sc = ch, sc
+                        best_ch, best_sc, second_sc = ch, sc, best_sc
+                    elif sc > second_sc:
+                        second_sc = sc
                 if best_sc < config.DIGIT_MIN_SCORE:
                     return None
+                # glyph ที่ไม่ใช่เลข (ขอบไอคอน/เครื่องหมายที่หลุดเข้า ROI) มัก match ได้
+                # "ใกล้เคียงกันหมดทุกเลข" — เลขจริงต้องชนะอันดับสองขาดพอ ไม่ใช่แค่เกินขั้นต่ำ
+                if best_sc - second_sc < config.DIGIT_MIN_MARGIN:
+                    return None
                 out += best_ch
-            return int(out) if out else None
+            if not out:
+                return None
+            val = int(out)
+            if config.COIN_MAX_VALUE and val > config.COIN_MAX_VALUE:
+                self.log(f"[coins] อ่านได้ {val:,} เกินเพดาน COIN_MAX_VALUE "
+                         f"({config.COIN_MAX_VALUE:,}) → ถือว่าอ่านผิด")
+                return None
+            return val
         except Exception as e:
             self.log(f"[coins] อ่านเลขไม่สำเร็จ: {e}")
             return None

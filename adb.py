@@ -12,6 +12,7 @@ adb.py — ชั้นสื่อสารกับอีมูเลเตอ
 import os
 import sys
 import random
+import threading
 import subprocess
 
 import cv2
@@ -50,6 +51,8 @@ class Adb:
         self.path = path or find_adb()
         self.device = device or config.DEFAULT_DEVICE
         self.log = log  # ฟังก์ชัน log (แทนที่ได้เพื่อส่งเข้า GUI)
+        self._input_lock = threading.Lock()  # กัน 2 เธรด (กระโดด/เธรดหลัก) ยิง input ชนกัน
+        self._input_fails = 0                # input ล้มเหลวติดกัน (ไว้ trigger ensure_device)
 
     # ------------------------------------------------------------
     # คำสั่งพื้นฐาน
@@ -157,39 +160,64 @@ class Adb:
         y = min(config.SCREEN_H - 1, max(0, int(y)))
         return x, y
 
+    def _input(self, args, timeout=None):
+        """
+        ยิงคำสั่ง `adb shell input ...` — ปกติ serialize ด้วย lock เพราะเธรดกระโดดกับ
+        เธรดหลัก (relay/นำทาง) กดพร้อมกันได้ event DOWN/UP ปนกันจนเกม reject
+        แต่รอ lock ไม่เกิน 2s: ถ้าคำสั่งก่อนหน้าแขวน (adb ค้าง) ให้ยิงต่อแบบไม่รอ —
+        อินพุตซ้อนกันตอน adb ค้างเสี่ยงน้อยกว่าดองปุ่ม relay/การกดหยุดไว้เป็นสิบวินาที
+        คืน True เมื่อสำเร็จ (returncode 0)
+        ล้มเหลวแบบ adb ตอบกลับมา (เช่น device not found — fail เงียบเพราะ stderr ถูก
+        redirect) ติดกันหลายครั้ง → ลองหา device ใหม่ให้ (ไม่ทำตอน timeout: adb ค้าง
+        ทั้งตัว เรียก `adb devices` ต่อมีแต่จะบล็อกเพิ่มอีก 10s ฟรี ๆ)
+        """
+        kw = {"timeout": timeout} if timeout is not None else {}
+        cmd = self._base() + ["shell", "input"] + [str(a) for a in args]
+        acquired = self._input_lock.acquire(timeout=2.0)
+        try:
+            r = self._run(cmd, **kw)
+        finally:
+            if acquired:
+                self._input_lock.release()
+        if r is not None and r.returncode == 0:
+            self._input_fails = 0
+            return True
+        self._input_fails += 1
+        if r is not None and self._input_fails % 5 == 0:
+            self.log(f"[adb] คำสั่ง input ล้มเหลวติดกัน {self._input_fails} ครั้ง "
+                     "(device หลุด/พอร์ตเปลี่ยน?) → ตรวจหา device ใหม่")
+            self.ensure_device()
+        return False
+
     def tap(self, x, y, jitter=None):
         """
         แตะที่ (x,y) + สุ่มเยื้องเล็กน้อย (jitter=None → ใช้ config.TAP_JITTER)
         ถ้า config.HUMAN_TAP_HOLD=True → ใส่ 'เวลาสัมผัสนิ้ว' สั้น ๆ (contact time)
         ผ่าน swipe จุดเดิม แทนการแตะแบบ 0 วินาที ให้เหมือนคนจิ้มจริง
+        คืน True เมื่อคำสั่งถึง device สำเร็จ
         """
         j = config.TAP_JITTER if jitter is None else jitter
         x, y = self._jit(x, y, j)
         if getattr(config, "HUMAN_TAP_HOLD", False):
             lo, hi = config.HUMAN_TAP_HOLD_MS
             ms = random.randint(int(lo), int(hi))
-            self._run(self._base() + ["shell", "input", "swipe",
-                                      str(x), str(y), str(x), str(y), str(ms)])
-        else:
-            self._run(self._base() + ["shell", "input", "tap", str(x), str(y)])
+            return self._input(["swipe", x, y, x, y, ms])
+        return self._input(["tap", x, y])
 
     def hold(self, x, y, seconds):
-        """กดค้างที่ (x,y) เป็นเวลา seconds (ทำผ่าน swipe จุดเดิม)"""
+        """กดค้างที่ (x,y) เป็นเวลา seconds (ทำผ่าน swipe จุดเดิม) — คืน True เมื่อสำเร็จ"""
         ms = int(seconds * 1000)
-        sx, sy = int(x), int(y)
-        self._run(self._base() + ["shell", "input", "swipe",
-                                  str(sx), str(sy), str(sx), str(sy), str(ms)],
-                  timeout=seconds + config.ADB_CMD_TIMEOUT)
+        return self._input(["swipe", int(x), int(y), int(x), int(y), ms],
+                           timeout=seconds + config.ADB_CMD_TIMEOUT)
 
     def swipe(self, x1, y1, x2, y2, duration_ms=300):
-        """ปัดจาก (x1,y1) → (x2,y2)"""
-        self._run(self._base() + ["shell", "input", "swipe",
-                                  str(int(x1)), str(int(y1)),
-                                  str(int(x2)), str(int(y2)), str(int(duration_ms))],
-                  timeout=duration_ms / 1000 + config.ADB_CMD_TIMEOUT)
+        """ปัดจาก (x1,y1) → (x2,y2) — คืน True เมื่อสำเร็จ"""
+        return self._input(["swipe", int(x1), int(y1), int(x2), int(y2), int(duration_ms)],
+                           timeout=duration_ms / 1000 + config.ADB_CMD_TIMEOUT)
 
     def slide(self, jitter=None):
-        """สไลด์ = กดค้างปุ่ม Slide (มี jitter). ใช้ config.JUMP_JITTER เป็นค่า default"""
+        """สไลด์ = กดค้างปุ่ม Slide (มี jitter). ใช้ config.JUMP_JITTER เป็นค่า default
+        คืน True เมื่อสำเร็จ"""
         j = config.JUMP_JITTER if jitter is None else jitter
         x, y = self._jit(*config.BTN_SLIDE, j)
-        self.hold(x, y, config.SLIDE_HOLD_SEC)
+        return self.hold(x, y, config.SLIDE_HOLD_SEC)

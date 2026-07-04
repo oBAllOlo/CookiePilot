@@ -50,6 +50,9 @@ class CookieBot:
         self.coin_reader = vision.CoinReader(log)
         self.coin_total = 0
         self._tpl_warned = set()   # template ทางเลือกที่เตือนว่า "ยังไม่มีไฟล์" ไปแล้ว (เตือนครั้งเดียวพอ)
+        self._cap_fails = 0        # แคปจอพลาดติดกัน (ไว้ trigger เช็ค device ใหม่)
+        self._nav_fail_streak = 0  # นำทางล้มเหลวติดกัน (watchdog กันวนกดมั่วไม่สิ้นสุด)
+        self._nav_saw_frame = True # รอบนำทางล่าสุดเคยแคปจอได้ไหม (แยก ADB ล่ม ออกจากหลงหน้าจอ)
         # โหมดบอท: "coin" = รีโรลเหรียญ (เดิม) / "box" = วิ่งเก็บกล่อง (Fast Start)
         # str() กันค่าใน settings.json ที่ไม่ใช่ string (เช่น true/123) ทำ .lower() พัง
         self.mode = str(mode or config.BOT_MODE or "coin").strip().lower()
@@ -63,8 +66,47 @@ class CookieBot:
     def _stopping(self):
         return self.stop.is_set()
 
+    def _required_templates(self):
+        """รายชื่อ template ที่ "ต้องมี" สำหรับโหมดปัจจุบัน (ไว้ตรวจครั้งเดียวก่อนเริ่มรัน)
+        — ป๊อปอัปใน DISMISS_POPUPS ไม่รวม เพราะเป็นทางเลือก (บอทข้ามให้เองถ้าไฟล์ไม่มี)"""
+        req = [config.IMG_BOOST_SCREEN, config.IMG_OK_BUTTON, config.IMG_RESULT,
+               config.IMG_LOBBY_PLAY, config.IMG_RELAY]
+        req += [it["check_img"] for it in config.BOOST_ITEMS]
+        if self.mode == "box":
+            req += [config.IMG_FAST_START, config.IMG_FAST_START_BUY,
+                    config.IMG_FAST_START_ACTIVATE]
+        else:
+            req += [config.IMG_TARGET_ITEM, config.IMG_MULTI_CHECK]
+        return req
+
     def _cap(self):
-        return self.adb.screencap()
+        img = self.adb.screencap()
+        if img is None:
+            self._cap_fails += 1
+            if self._cap_fails % 3 == 0 and not self._stopping():
+                self.log("[adb] แคปจอพลาดติดกันหลายครั้ง → เช็ค device ใหม่ (เผื่อหลุด/พอร์ตเปลี่ยน)")
+                self.adb.ensure_device()
+        else:
+            self._cap_fails = 0
+        return img
+
+    def _nav_failed(self, msg):
+        """นับนำทางล้มเหลวติดกัน — เกิน NAV_FAIL_LIMIT ให้หยุดบอท
+        (จอที่ไม่รู้จัก เช่น เกมเด้ง/หน้าอัปเดตสโตร์ ไม่ raise exception
+        err_streak ใน run() จึงจับไม่ได้ — ปล่อยไว้บอทจะวนกดมั่วไม่สิ้นสุด)"""
+        if not self._nav_saw_frame:
+            # มองไม่เห็นจอเลยทั้งรอบ = ADB/อีมูเลเตอร์ล่มชั่วคราว ไม่ใช่บอทหลงหน้าจอ
+            # → รอไปเรื่อย ๆ ห้ามนับ streak (_cap จะ ensure_device กู้ให้เองเมื่อ device กลับมา)
+            self.log(f"[WARN] {msg} — แคปจอไม่ได้เลย (ADB/อีมูเลเตอร์ล่ม?) → รอจนกว่าจะกลับมา")
+            time.sleep(3)
+            return State.REROLL
+        self._nav_fail_streak += 1
+        self.log(f"[WARN] {msg} (ล้มเหลวติดกัน {self._nav_fail_streak}/{config.NAV_FAIL_LIMIT})")
+        if self._nav_fail_streak >= config.NAV_FAIL_LIMIT:
+            self.log("[FATAL] นำทางล้มเหลวติดกันเกินกำหนด → หยุดบอท (เช็คว่าเกมอยู่หน้าไหน)")
+            return None
+        time.sleep(3)
+        return State.REROLL
 
     # ============================================================
     # นำทางเข้า "หน้าเตรียมตัว"
@@ -82,10 +124,13 @@ class CookieBot:
         x_close_tries = 0
         play_stuck = 0     # กด Play ไปแล้วกี่ครั้งโดยที่รอบถัดมายังเห็นล็อบบี้เดิม
         confirm_idx = 0    # ไล่กดจุด Confirm กลางจอถึงจุดไหนแล้ว
+        self._nav_saw_frame = False   # ให้ _nav_failed แยกออก: ADB ล่ม (รอ) vs หลงหน้าจอ (นับ streak)
         for i in range(max_tries):
             if self._stopping():
                 return False
             screen = self._cap()
+            if screen is not None:
+                self._nav_saw_frame = True
             if screen is None:
                 # แคปจอไม่ได้ (adb สะดุด) — ไม่ได้แปลว่าจอเปลี่ยน อย่ารีเซ็ตตัวนับ/กดมั่ว
                 self.log("[nav] แคปหน้าจอไม่ได้ (adb สะดุด) → รอแล้วลองใหม่")
@@ -195,6 +240,14 @@ class CookieBot:
         time.sleep(1.0)
 
         dlg = self._cap()
+        if dlg is None:
+            dlg = self._cap()   # adb สะดุดชั่วคราว → ลองอีกครั้ง
+        if dlg is None:
+            # มองไม่เห็นหน้า Multi ห้ามกดต่อ — กดทั้งที่ตาบอดอาจสลับติ๊ก Double Coins ออก
+            self.log("[reroll] แคปหน้า Multi ไม่ได้ → ปิดหน้าต่างแล้วเริ่มใหม่")
+            self.adb.tap(*config.BTN_MULTI_CLOSE)
+            time.sleep(1.0)
+            return False
         for cx, cy in config.MULTI_SELECT_TARGETS:
             roi = (cx - 30, cy - 30, cx + 30, cy + 30)
             checked, sc = vision.find_in_roi(dlg, config.IMG_MULTI_CHECK, roi,
@@ -234,6 +287,12 @@ class CookieBot:
         self.log("[*] ตรวจสอบ Boost 3 ไอเทม...")
         for _ in range(3):
             screen = self._cap()
+            if screen is None:
+                # ตาบอดห้ามกด — score=0.00 จะดูเหมือน "ยังไม่ติ๊ก" ทั้งสามอัน
+                # แล้วบอทกดสลับบูสต์ที่ติ๊กอยู่แล้วให้ปิด (เหตุผลเดียวกับ guard หน้า Multi)
+                self.log("[*] แคปจอไม่ได้ระหว่างเช็คบูสต์ → รอแล้วลองรอบถัดไป")
+                time.sleep(1.0)
+                continue
             all_on = True
             for item in config.BOOST_ITEMS:
                 checked, sc = vision.find_in_roi(screen, item["check_img"],
@@ -253,9 +312,8 @@ class CookieBot:
     def state_reroll(self):
         self.log("\n===== [STATE 1] REROLL — Multi-Buy หา Double Coins =====")
         if not self.ensure_on_boost_screen():
-            self.log("[WARN] นำทางยังไม่สำเร็จ → รอแล้ววนลองใหม่")
-            time.sleep(3)
-            return State.REROLL
+            return self._nav_failed("นำทางยังไม่สำเร็จ → รอแล้ววนลองใหม่")
+        self._nav_fail_streak = 0
 
         m = vision.find(self._cap(), config.IMG_TARGET_ITEM)
         if m.found:
@@ -297,7 +355,14 @@ class CookieBot:
                     time.sleep(min(0.1, remaining))
 
             # จุดฐานกระโดดที่ค่อย ๆ เลื่อน (คนไม่จิ้มจุดเป๊ะเดิมทุกครั้ง)
-            base = [float(config.BTN_JUMP[0]), float(config.BTN_JUMP[1])]
+            # บรรทัดนี้อยู่นอก try ของลูปด้านล่าง — BTN_JUMP ผิดรูปแบบ (เช่นใส่เลขเดียว
+            # ใน settings.json) ห้ามทำให้เธรดตายเงียบเหมือนบั๊กเดิม
+            try:
+                base = [float(config.BTN_JUMP[0]), float(config.BTN_JUMP[1])]
+            except Exception as e:
+                self.log(f"[jump][FATAL] BTN_JUMP ตั้งค่าผิดรูปแบบ ({config.BTN_JUMP!r}): {e} "
+                         "→ ไม่กระโดดรอบนี้ (แก้ใน settings.json)")
+                return
 
             def drift_base():
                 """เลื่อนจุดฐานแบบสุ่มช้า ๆ + ดึงกลับเข้าจุดตั้งต้น + จำกัดระยะห่าง"""
@@ -313,27 +378,33 @@ class CookieBot:
                     base[0], base[1] = ox + dx * s, oy + dy * s
 
             def tap_once():
-                """แตะปุ่มกระโดด 1 ครั้ง (เลือกจุดตามโหมด) + นับ"""
+                """แตะปุ่มกระโดด 1 ครั้ง (เลือกจุดตามโหมด) — นับเฉพาะครั้งที่คำสั่งถึง device จริง"""
                 if config.PREVENT_INACTIVE:
-                    self.adb.tap(*random.choice(config.JUMP_TAP_POINTS),
-                                 jitter=config.JUMP_JITTER)
+                    ok = self.adb.tap(*random.choice(config.JUMP_TAP_POINTS),
+                                      jitter=config.JUMP_JITTER)
                 elif config.HUMAN_DRIFT:
                     drift_base()
-                    self.adb.tap(int(base[0]), int(base[1]), jitter=config.JUMP_JITTER)
+                    ok = self.adb.tap(int(base[0]), int(base[1]), jitter=config.JUMP_JITTER)
                 else:
-                    self.adb.tap(*config.BTN_JUMP, jitter=config.JUMP_JITTER)
-                jump_count[0] += 1
+                    ok = self.adb.tap(*config.BTN_JUMP, jitter=config.JUMP_JITTER)
+                if ok:
+                    jump_count[0] += 1
 
-            while still_running():
+            def one_cycle():
                 # โหมดเดิม: กดคงที่ + สุ่มดีเลย์ uniform
                 if not config.HUMANLIKE_JUMP:
                     tap_once()
                     nap(random.uniform(config.JUMP_DELAY_MIN, config.JUMP_DELAY_MAX))
-                    continue
+                    return
 
                 # โหมดเลียนแบบคน
-                # 1) การกด: บางครั้งเป็นเบิร์สต์รัว (double/triple jump)
-                if random.random() < config.HUMAN_BURST_CHANCE:
+                # 1) การกด: บางจังหวะสไลด์ (ลอดสิ่งกีดขวางเตี้ย — เปิดด้วย HUMAN_SLIDE_CHANCE > 0),
+                #    บางครั้งเป็นเบิร์สต์รัว (double/triple jump), ที่เหลือกดเดี่ยว
+                roll = random.random()
+                if roll < config.HUMAN_SLIDE_CHANCE:
+                    if self.adb.slide():
+                        jump_count[0] += 1
+                elif roll < config.HUMAN_SLIDE_CHANCE + config.HUMAN_BURST_CHANCE:
                     taps = random.randint(*config.HUMAN_BURST_TAPS)
                     for k in range(taps):
                         if not still_running():
@@ -350,6 +421,21 @@ class CookieBot:
                 else:
                     g = random.lognormvariate(config.HUMAN_GAP_MU, config.HUMAN_GAP_SIGMA)
                     nap(max(config.HUMAN_GAP_MIN, min(config.HUMAN_GAP_MAX, g)))
+
+            err_streak = 0
+            while still_running():
+                # เธรดนี้ห้ามตายเงียบ — .exe แบบ windowed ไม่มี stderr ให้เห็น traceback
+                # (ตายไปคุกกี้จะไม่กระโดดอีกเลยทั้งรอบโดยไม่มีใครรู้)
+                try:
+                    one_cycle()
+                    err_streak = 0
+                except Exception as e:
+                    err_streak += 1
+                    self.log(f"[jump] เธรดกระโดดสะดุด (ครั้งที่ {err_streak}): {e}")
+                    if err_streak >= 30:
+                        self.log("[jump][FATAL] สะดุดติดกันมากเกิน → เลิกกระโดดรอบนี้ (เช็ค ADB path/device)")
+                        break
+                    nap(1.0)
 
         start_time = time.time()
         jt = threading.Thread(target=worker_loop, daemon=True)
@@ -377,13 +463,14 @@ class CookieBot:
                         last_change = time.time()
                     last_sig = sig
 
-                # เจอนินจา relay → กดวิ่งต่อ
+                # เจอนินจา relay → กดวิ่งต่อ (ห้าม continue — ต้องไหลลงไปเช็ค Result/timeout เสมอ
+                # ไม่งั้น relay ที่ match ค้าง เช่น false positive หรือกดปุ่มไม่ติด
+                # จะขังลูปนี้ไว้โดยไม่มี RUN_STATE_TIMEOUT คุม)
                 relay = vision.find(screen, config.IMG_RELAY, config.RELAY_THRESHOLD)
                 if relay.found:
                     self.log(f"    [relay] เจอนินจา (score={relay.score:.3f}) → กดวิ่งต่อ")
                     self.adb.tap(*config.BTN_RELAY)
                     time.sleep(0.5)
-                    continue
 
                 # เจอหน้า Result → ไป STATE 3
                 result = vision.find(screen, config.IMG_RESULT)
@@ -400,9 +487,10 @@ class CookieBot:
         finally:
             jump_stop.set()
             # รอ thread กระโดดจบก่อน — กันยิง tap ค้างท่อไปโดนปุ่มบนหน้า Result
-            jt.join(timeout=5.0)
+            # (คำสั่งค้างนานสุด = slide/hold: SLIDE_HOLD_SEC + ADB_CMD_TIMEOUT — ต้องรอเกินนั้น)
+            jt.join(timeout=config.ADB_CMD_TIMEOUT + config.SLIDE_HOLD_SEC + 2.0)
             if jt.is_alive():
-                self.log("[WARN] jump thread ยังไม่หยุดใน 5s (adb อาจช้า) — ไปต่อ")
+                self.log("[WARN] jump thread ยังไม่หยุดตามเวลา (adb อาจค้าง) — ไปต่อ")
 
     # ============================================================
     # โหมดวิ่งเก็บกล่อง (box) — STATE 1: ซื้อ Fast Start (ไม่รีโรล)
@@ -472,17 +560,15 @@ class CookieBot:
     def state_prepare_box(self):
         self.log("\n===== [STATE 1] PREP — ซื้อ Fast Start (โหมดวิ่งเก็บกล่อง ไม่รีโรล) =====")
         if not self.ensure_on_boost_screen():
-            self.log("[WARN] นำทางยังไม่สำเร็จ → รอแล้ววนลองใหม่")
-            time.sleep(3)
-            return State.REROLL
+            return self._nav_failed("นำทางยังไม่สำเร็จ → รอแล้ววนลองใหม่")
 
         self.ensure_fast_start()
 
         # กลับให้ถึงหน้าเตรียมตัวชัวร์ ๆ ก่อนติ๊กบูสต์ (เผื่อมีป๊อปอัปหลังซื้อ)
+        # (streak รีเซ็ตเมื่อผ่านครบทั้ง state — ถ้ารีเซ็ตตรงนี้ การพังซ้ำที่จุดนี้จะไม่ถูกจับ)
         if not self.ensure_on_boost_screen():
-            self.log("[WARN] หลังซื้อ Fast Start กลับหน้าเตรียมตัวไม่ได้ → วนลองใหม่")
-            time.sleep(3)
-            return State.REROLL
+            return self._nav_failed("หลังซื้อ Fast Start กลับหน้าเตรียมตัวไม่ได้ → วนลองใหม่")
+        self._nav_fail_streak = 0
 
         self.ensure_boosts_selected()
         self.log("[OK] → กด Play เริ่มวิ่งเก็บกล่อง")
@@ -552,24 +638,27 @@ class CookieBot:
     # ============================================================
     # STATE 3 — RESULT
     # ============================================================
-    def record_result_coins(self, screen):
-        """อ่านเหรียญรอบนี้ → บันทึก coins.csv + แจ้ง GUI. อ่านพลาดเซฟภาพไว้ดู"""
-        if screen is None:
-            return
-        coins = self.coin_reader.read(screen)
+    def record_result_coins(self, screen, readable=True):
+        """บันทึกผลรอบนี้ลง coins.csv + แจ้ง GUI (จบ 1 เกม = 1 แถวเสมอ แม้อ่านเลขไม่ได้)
+        readable=False = รู้อยู่แล้วว่าเฟรมนี้อ่านเลขไม่ได้ (ไม่ใช่หน้า Result / หา OK ไม่เจอ)
+        → ลงแถวว่างกันรอบหายจาก log + เซฟภาพไว้ดู"""
+        coins = self.coin_reader.read(screen) if (readable and screen is not None) else None
         if coins is not None:
             self.coin_total += coins
         try:
-            log_dir = data_path("coin_logs")
+            csv_path = data_path(config.COIN_CSV)
+            log_dir = os.path.dirname(csv_path)
             os.makedirs(log_dir, exist_ok=True)
             ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            with open(os.path.join(log_dir, "coins.csv"), "a", encoding="utf-8") as f:
+            with open(csv_path, "a", encoding="utf-8") as f:
                 f.write(f"{ts},{coins if coins is not None else ''},{self.coin_total}\n")
             if coins is not None:
                 self.log(f"[coins] เหรียญรอบนี้: {coins:,}  (รวม {self.coin_total:,})")
-            else:
+            elif screen is not None:
                 cv2.imwrite(os.path.join(log_dir, f"result_FAIL_{ts}.png"), screen)
                 self.log(f"[coins] อ่านเลขไม่ได้ → เซฟภาพ result_FAIL_{ts}.png")
+            else:
+                self.log("[coins] อ่านเลขไม่ได้ (ไม่มีภาพหน้าจอ) → ลงแถวว่างไว้")
         except Exception as e:
             self.log(f"[coins] บันทึกไม่สำเร็จ: {e}")
 
@@ -583,11 +672,20 @@ class CookieBot:
         self.log("\n===== [STATE 3] RESULT — กำลังหาปุ่ม OK =====")
         MAX_ATTEMPTS = 40
         attempts = 0
+        screen = None
         while not self._stopping():
             screen = self._cap()
             ok = vision.find(screen, config.IMG_OK_BUTTON)
             if ok.found:
-                self.record_result_coins(screen)
+                # ปุ่ม OK เขียวเป็น asset ที่เกมใช้ซ้ำหลาย dialog และ state นี้เข้ามาแบบ
+                # ถูกบังคับด้วย RUN_STATE_TIMEOUT ได้ — อ่านเลขเฉพาะเมื่อเป็นหน้า Result จริง
+                # กันอ่านค่ามั่วจาก dialog อื่นเข้า CSV (threshold หลวมกว่าปกติ — เทมเพลตเพี้ยน
+                # เล็กน้อยต้องไม่ทำให้เหรียญถูกลงเป็นแถวว่างทุกรอบ)
+                if vision.find(screen, config.IMG_RESULT, config.RESULT_CONFIRM_THRESHOLD).found:
+                    self.record_result_coins(screen)
+                else:
+                    self.log("[WARN] เจอปุ่ม OK แต่ไม่ใช่หน้า Result → ไม่อ่านเลข (ลงแถวว่าง+เซฟภาพไว้ดู)")
+                    self.record_result_coins(screen, readable=False)
                 self.log(f"[OK] เจอปุ่ม OK (score={ok.score:.3f}) → กดกลับล็อบบี้")
                 self.adb.tap(*ok.center)
                 time.sleep(2.5)
@@ -595,10 +693,18 @@ class CookieBot:
 
             attempts += 1
             if attempts >= MAX_ATTEMPTS:
-                self.log("[WARN] หาปุ่ม OK ไม่เจอเกินกำหนด → วนกลับ STATE 1")
+                self.log("[WARN] หาปุ่ม OK ไม่เจอเกินกำหนด → บันทึกรอบนี้เป็นอ่านไม่ได้ แล้ววนกลับ STATE 1")
+                self.record_result_coins(screen, readable=False)
                 return State.REROLL
             self.log(f"[..] ยังไม่เจอปุ่ม OK (best={ok.score:.3f}) attempt {attempts}/{MAX_ATTEMPTS}")
             time.sleep(config.LOOP_SLEEP)
+
+        # ถูกสั่งหยุดระหว่างหาปุ่ม OK — เกมรอบนี้จบไปแล้ว ต้องบันทึกก่อนออก ไม่งั้นรอบหายจาก log
+        if screen is not None and vision.find(screen, config.IMG_RESULT,
+                                              config.RESULT_CONFIRM_THRESHOLD).found:
+            self.record_result_coins(screen)
+        else:
+            self.record_result_coins(screen, readable=False)
         return None
 
     # ============================================================
@@ -615,6 +721,13 @@ class CookieBot:
         err_streak = 0
         box_mode = self.mode == "box"
         self.log(f"[bot] โหมด: {'วิ่งเก็บกล่อง (box — Fast Start)' if box_mode else 'รีโรลเหรียญ (coin)'}")
+
+        # ตรวจ template ที่จำเป็นครั้งเดียวก่อนเริ่ม — ไฟล์หาย/เสีย (เช่นเพิ่งแคปทับพลาด)
+        # จะได้เตือนชัดทันที ไม่ใช่วนพัง 30 รอบ/อ่านเหรียญไม่ได้เงียบ ๆ กลางดึก (ไม่ abort — เตือนแล้วไปต่อ)
+        ok, missing = vision.validate_templates(self._required_templates(), self.log)
+        if not ok:
+            self.log(f"[check][WARN] template จำเป็นขาด/เสีย {len(missing)} ไฟล์ "
+                     "→ นำทาง/อ่านผลอาจล้มเหลวจนกว่าจะแคปไฟล์เหล่านี้ให้ครบ (ดูรายชื่อด้านบน)")
         try:
             while not self._stopping():
                 prev = current
