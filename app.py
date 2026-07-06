@@ -16,19 +16,23 @@ from adb import Adb
 from bot import CookieBot
 
 
+def bind_hover(btn, bg, hover_bg, fg="#ffffff", hover_fg="#ffffff"):
+    """สลับสีปุ่มตอนเมาส์เข้า/ออก (เฉพาะตอน state=normal) — ใช้ร่วมกันทุกปุ่มในแอป"""
+    btn.bind("<Enter>", lambda e: btn.config(bg=hover_bg, fg=hover_fg) if btn["state"] == "normal" else None)
+    btn.bind("<Leave>", lambda e: btn.config(bg=bg, fg=fg) if btn["state"] == "normal" else None)
+
+
 class PillSelector:
     def __init__(self, parent, variable, options, command=None):
-        self.parent = parent
         self.variable = variable
-        self.options = options
         self.command = command
 
         self.frame = tk.Frame(parent, bg="#0f172a", highlightthickness=1, highlightbackground="#334155")
         self.buttons = {}
 
         for text, val in options:
-            btn = tk.Button(self.frame, text=text, font=("Segoe UI", 9, "bold"), bd=0, relief="flat", cursor="hand2")
-            btn.config(command=lambda v=val: self.select(v))
+            btn = tk.Button(self.frame, text=text, font=("Segoe UI", 9, "bold"), bd=0, relief="flat",
+                            cursor="hand2", command=lambda v=val: self.select(v))
             btn.pack(side="left", fill="both", expand=True, padx=2, pady=2)
             self.buttons[val] = btn
 
@@ -45,14 +49,12 @@ class PillSelector:
     def update_ui(self):
         current_val = self.variable.get()
         for val, btn in self.buttons.items():
-            if val == current_val:
+            if val == current_val:   # ปุ่มที่เลือกอยู่ = ไม่มี hover (bg == hover)
                 btn.config(bg="#3b82f6", fg="#ffffff", activebackground="#2563eb", activeforeground="#ffffff")
-                btn.unbind("<Enter>")
-                btn.unbind("<Leave>")
+                bind_hover(btn, "#3b82f6", "#3b82f6", "#ffffff", "#ffffff")
             else:
                 btn.config(bg="#1e293b", fg="#94a3b8", activebackground="#334155", activeforeground="#f8fafc")
-                btn.bind("<Enter>", lambda e, b=btn: b.config(bg="#334155", fg="#f8fafc") if b["state"] != "disabled" else None)
-                btn.bind("<Leave>", lambda e, b=btn: b.config(bg="#1e293b", fg="#94a3b8") if b["state"] != "disabled" else None)
+                bind_hover(btn, "#1e293b", "#334155", "#94a3b8", "#f8fafc")
 
     def set_state(self, state):
         for btn in self.buttons.values():
@@ -117,14 +119,7 @@ class App:
                             activebackground=hover_bg, activeforeground=hover_fg,
                             disabledforeground="#64748b", font=font, bd=0,
                             relief="flat", cursor="hand2", **kwargs)
-            def on_enter(e):
-                if btn["state"] == "normal":
-                    btn.config(bg=hover_bg, fg=hover_fg)
-            def on_leave(e):
-                if btn["state"] == "normal":
-                    btn.config(bg=bg, fg=fg)
-            btn.bind("<Enter>", on_enter)
-            btn.bind("<Leave>", on_leave)
+            bind_hover(btn, bg, hover_bg, fg, hover_fg)
             return btn
 
         def make_entry(parent, textvariable, width, font=("Consolas", 10), justify="left"):
@@ -145,23 +140,16 @@ class App:
             entry.bind("<FocusOut>", on_focus_out)
             return border_frame, entry
 
-        def make_chip(parent, col, caption, var, value_fg):
-            """ช่องสถิติแบบมีกรอบ (เวลารัน / รอบ / เหรียญต่อชม.)"""
-            box = tk.Frame(parent, bg="#0f1a2e", highlightthickness=1, highlightbackground="#334155")
+        def make_stat(parent, col, caption, var, value_fg, framed):
+            """ช่องสถิติ 1 ช่อง — framed=True มีกรอบ (chip หลัก) / False ไม่มีกรอบ (สถิติย่อย)"""
+            bg = "#0f1a2e" if framed else "#1e293b"
+            box = tk.Frame(parent, bg=bg, highlightthickness=1 if framed else 0,
+                           highlightbackground="#334155")
             box.grid(row=0, column=col, sticky="nsew", padx=4)
             tk.Label(box, text=caption, font=("Segoe UI", 8, "bold"),
-                     bg="#0f1a2e", fg="#94a3b8").pack(pady=(7, 0))
-            tk.Label(box, textvariable=var, font=("Segoe UI", 13, "bold"),
-                     bg="#0f1a2e", fg=value_fg).pack(pady=(1, 8))
-
-        def make_mini(parent, col, caption, var, value_fg):
-            """สถิติย่อยไม่มีกรอบ (รอบล่าสุด / เฉลี่ย / สูงสุด)"""
-            cell = tk.Frame(parent, bg="#1e293b")
-            cell.grid(row=0, column=col, sticky="nsew", padx=4)
-            tk.Label(cell, text=caption, font=("Segoe UI", 8, "bold"),
-                     bg="#1e293b", fg="#94a3b8").pack(anchor="center")
-            tk.Label(cell, textvariable=var, font=("Segoe UI", 12, "bold"),
-                     bg="#1e293b", fg=value_fg).pack(anchor="center", pady=(2, 0))
+                     bg=bg, fg="#94a3b8").pack(pady=(7, 0) if framed else 0)
+            tk.Label(box, textvariable=var, font=("Segoe UI", 13 if framed else 12, "bold"),
+                     bg=bg, fg=value_fg).pack(pady=(1, 8) if framed else (2, 0))
 
         # ---------- 1) แถบหัว + ป้ายสถานะ (ติดบนสุดเสมอ) ----------
         bar = tk.Frame(r, bg="#0b1220")
@@ -201,9 +189,9 @@ class App:
         self.uptime_var = tk.StringVar(value="00:00:00")
         self.loops_done_var = tk.StringVar(value="-")
         self.rate_var = tk.StringVar(value="-")
-        make_chip(chips, 0, "⏱ เวลารัน", self.uptime_var, "#e2e8f0")
-        make_chip(chips, 1, "🔁 รอบที่เล่น", self.loops_done_var, "#fbbf24")
-        make_chip(chips, 2, "⚡ เหรียญ/ชม.", self.rate_var, "#34d399")
+        make_stat(chips, 0, "⏱ เวลารัน", self.uptime_var, "#e2e8f0", framed=True)
+        make_stat(chips, 1, "🔁 รอบที่เล่น", self.loops_done_var, "#fbbf24", framed=True)
+        make_stat(chips, 2, "⚡ เหรียญ/ชม.", self.rate_var, "#34d399", framed=True)
 
         tk.Frame(hero, bg="#334155", height=1).pack(fill="x", padx=12, pady=(2, 0))
         mini = tk.Frame(hero, bg="#1e293b")
@@ -213,9 +201,9 @@ class App:
         self.recent_coins_var = tk.StringVar(value="-")
         self.avg_var = tk.StringVar(value="-")
         self.best_var = tk.StringVar(value="-")
-        make_mini(mini, 0, "เหรียญรอบล่าสุด", self.recent_coins_var, "#34d399")
-        make_mini(mini, 1, "เฉลี่ย/รอบ", self.avg_var, "#e2e8f0")
-        make_mini(mini, 2, "สูงสุด/รอบ", self.best_var, "#fbbf24")
+        make_stat(mini, 0, "เหรียญรอบล่าสุด", self.recent_coins_var, "#34d399", framed=False)
+        make_stat(mini, 1, "เฉลี่ย/รอบ", self.avg_var, "#e2e8f0", framed=False)
+        make_stat(mini, 2, "สูงสุด/รอบ", self.best_var, "#fbbf24", framed=False)
 
         # ---------- 3) ควบคุมการทำงาน ----------
         ctrl = make_card(r)
@@ -461,29 +449,15 @@ class App:
             self.start_bot()
 
     def _update_toggle_btn(self, state_type):
-        if state_type == "stopped":
-            self.toggle_btn.config(text="▶  เริ่มทำงานบอท", bg="#10b981", fg="#ffffff", activebackground="#059669", activeforeground="#ffffff", state="normal")
-            self.toggle_btn_bg = "#10b981"
-            self.toggle_btn_hover = "#059669"
-        elif state_type == "running":
-            self.toggle_btn.config(text="■  หยุดทำงานบอท", bg="#ef4444", fg="#ffffff", activebackground="#dc2626", activeforeground="#ffffff", state="normal")
-            self.toggle_btn_bg = "#ef4444"
-            self.toggle_btn_hover = "#dc2626"
-        elif state_type == "stopping":
-            self.toggle_btn.config(text="●  กำลังหยุดบอท...", bg="#f59e0b", fg="#ffffff", activebackground="#d97706", activeforeground="#ffffff", state="disabled")
-            self.toggle_btn_bg = "#f59e0b"
-            self.toggle_btn_hover = "#d97706"
-
-        # Update/rebind hover bindings to match active states
-        def on_enter(e):
-            if self.toggle_btn["state"] == "normal":
-                self.toggle_btn.config(bg=self.toggle_btn_hover)
-        def on_leave(e):
-            if self.toggle_btn["state"] == "normal":
-                self.toggle_btn.config(bg=self.toggle_btn_bg)
-
-        self.toggle_btn.bind("<Enter>", on_enter)
-        self.toggle_btn.bind("<Leave>", on_leave)
+        spec = {
+            "stopped":  ("▶  เริ่มทำงานบอท",  "#10b981", "#059669", "normal"),
+            "running":  ("■  หยุดทำงานบอท",   "#ef4444", "#dc2626", "normal"),
+            "stopping": ("●  กำลังหยุดบอท...", "#f59e0b", "#d97706", "disabled"),
+        }
+        text, bg, hover, state = spec[state_type]
+        self.toggle_btn.config(text=text, bg=bg, fg="#ffffff", activebackground=hover,
+                               activeforeground="#ffffff", state=state)
+        bind_hover(self.toggle_btn, bg, hover, "#ffffff", "#ffffff")
 
     def start_bot(self):
         if self.testing:

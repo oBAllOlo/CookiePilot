@@ -47,7 +47,7 @@ def has_template(path):
         return False
 
 
-def validate_templates(paths, log=print, need_digits=True):
+def validate_templates(paths, log=print):
     """ตรวจ template ที่จำเป็นครั้งเดียวก่อนเริ่มรัน (โหลด + แคชไว้เลย)
     ไฟล์หาย/เสีย (เช่นเพิ่งแคปทับพลาด) จะได้เตือนชัด ๆ ทันที แทนที่จะวนพัง 30 รอบ
     พร้อม traceback หรืออ่านเหรียญไม่ได้เงียบ ๆ ทั้งคืน
@@ -59,11 +59,10 @@ def validate_templates(paths, log=print, need_digits=True):
         except (FileNotFoundError, ValueError) as e:
             missing.append(p)
             log(f"[check] template ใช้ไม่ได้: {p} — {e}")
-    if need_digits:
-        n = CoinReader(log).digit_count()
-        if n < 10:
-            log(f"[check] template เลขไม่ครบ ({n}/10) ใน {config.DIGIT_DIR}/ "
-                "→ อ่านจำนวนเหรียญไม่ได้ (จะลง CSV เป็นแถวว่างทุกรอบ)")
+    n = len(CoinReader(log)._load_digits())
+    if n < 10:
+        log(f"[check] template เลขไม่ครบ ({n}/10) ใน {config.DIGIT_DIR}/ "
+            "→ อ่านจำนวนเหรียญไม่ได้ (จะลง CSV เป็นแถวว่างทุกรอบ)")
     return (not missing, missing)
 
 
@@ -163,10 +162,6 @@ class CoinReader:
                     t = cv2.resize(t, (config.DIGIT_W, config.DIGIT_H))
                 self._digits[d] = t.astype(np.float32)
         return self._digits
-
-    def digit_count(self):
-        """จำนวน template เลข 0-9 ที่โหลดได้จริง (ครบ = 10) — ใช้เช็คก่อนเริ่มรัน"""
-        return len(self._load_digits())
 
     @staticmethod
     def _segment_digits(crop):
