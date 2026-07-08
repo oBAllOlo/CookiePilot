@@ -2,8 +2,9 @@
 humanizer.py — SessionPlanner (V2 Phase 1)
 ==========================================
 ทำให้จังหวะ "ระหว่างเกม" ดูเป็นคนจริง 3 อย่าง:
-  1) พักสั้นหลังจบทุกเกม — สุ่ม 0–60 วิ (ตั้งใน config.BREAK_AFTER_GAME_RANGE)
-     แทรกเฉพาะรอยต่อ RESULT→REROLL เกมเห็นแค่ "เล่นจบแล้ววางมือถือแป๊บนึง"
+  1) พักสั้นแบบคนวางมือถือ — วิ่งรวดต่อเนื่องแบบสุ่ม (config.CONTINUOUS_RUN_RANGE รอบ)
+     แล้วค่อยพัก 1 ที (ยาว config.BREAK_AFTER_GAME_RANGE วิ) ไม่ใช่พักทุกรอบ
+     แทรกเฉพาะรอยต่อ RESULT→REROLL เกมเห็นแค่ "เล่นจบหลายเกมแล้ววางมือถือแป๊บ"
   2) ความล้า (fatigue) — เล่นต่อเนื่องนานขึ้น จังหวะกดช้าลงทีละนิด
      (ดัน HUMAN_GAP_MU ขึ้นเรื่อย ๆ จนสุดที่ FATIGUE_MU_MAX_ADD)
   3) สุ่มพารามิเตอร์จังหวะกดชุดใหม่เป็นช่วง ๆ — เหมือนอารมณ์/ท่านั่งคนเปลี่ยน
@@ -61,11 +62,17 @@ class SessionPlanner:
             self.log("[human] BTN_JUMP ผิดรูปแบบ → ข้ามการเลื่อนฐานนิ้ว")
         self._roll_anchor()
         self.next_reroll = self._schedule_next_reroll()
+        self.free_runs = self._roll_free_runs()   # วิ่งต่อเนื่องอีกกี่รอบก่อนพักครั้งถัดไป
 
     # ------------------------------------------------------------
     def _schedule_next_reroll(self):
         lo, hi = config.PARAM_REROLL_EVERY_MIN
         return time.time() + random.uniform(float(lo), float(hi)) * 60.0
+
+    def _roll_free_runs(self):
+        """สุ่มจำนวนรอบที่จะวิ่งรวดต่อเนื่อง (ไม่พัก) ก่อนพักครั้งถัดไป"""
+        lo, hi = getattr(config, "CONTINUOUS_RUN_RANGE", (0, 0))
+        return random.randint(int(lo), int(hi))
 
     def fatigue_frac(self):
         """สัดส่วนความล้า 0..1 (0 = สดชื่น, 1 = ล้าเต็มที่) — GUI ใช้โชว์ด้วย"""
@@ -126,5 +133,13 @@ class SessionPlanner:
             self._reroll()
             self.next_reroll = self._schedule_next_reroll()
         self._apply()   # อัปเดต fatigue ทุกรอบ (และ offset ล่าสุด)
+
+        # วิ่งต่อเนื่อง: ยังไม่ครบสตรีค → ไม่พัก (คืน 0) แล้วนับถอยหลัง
+        if self.free_runs > 0:
+            self.free_runs -= 1
+            self.log(f"[พัก] วิ่งต่อเนื่อง — เหลืออีก {self.free_runs} รอบก่อนพัก")
+            return 0.0
+        # ครบสตรีคแล้ว → พัก 1 ที แล้วสุ่มสตรีคใหม่
+        self.free_runs = self._roll_free_runs()
         lo, hi = config.BREAK_AFTER_GAME_RANGE
         return random.uniform(float(lo), float(hi))

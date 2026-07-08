@@ -492,6 +492,7 @@ class CookieBot:
 
         last_sig = None
         last_change = time.time()
+        last_relay_log = 0.0   # [diag] throttle log คะแนน relay (วินาที)
         try:
             while not self._stopping():
                 t = time.time() - start_time
@@ -515,7 +516,13 @@ class CookieBot:
                 # เจอนินจา relay → กดวิ่งต่อ (ห้าม continue — ต้องไหลลงไปเช็ค Result/timeout เสมอ
                 # ไม่งั้น relay ที่ match ค้าง เช่น false positive หรือกดปุ่มไม่ติด
                 # จะขังลูปนี้ไว้โดยไม่มี RUN_STATE_TIMEOUT คุม)
-                relay = vision.find(screen, config.IMG_RELAY, config.RELAY_THRESHOLD)
+                # find_multiscale: ทนสเกล template เพี้ยนจากจอจริงเล็กน้อย (เหมือน Fast Start)
+                relay = vision.find_multiscale(screen, config.IMG_RELAY, config.RELAY_THRESHOLD)
+                # [diag] log คะแนน relay ที่ดีที่สุดทุก ~3 วิ แม้ยังไม่ถึง threshold —
+                # ดูว่าตอนนินจาโผล่จริงคะแนนแตะเท่าไหร่ (ลบบล็อกนี้ออกได้เมื่อจูนเสร็จ)
+                if time.time() - last_relay_log >= 3.0:
+                    self.log(f"    [relay][diag] best score={relay.score:.3f} (th={config.RELAY_THRESHOLD})")
+                    last_relay_log = time.time()
                 if relay.found:
                     # ตอบสนองแบบคน: เดิมกดภายใน RESULT_CHECK_INTERVAL เป๊ะทุกครั้ง —
                     # หน่วง react สุ่มก่อนกด และนาน ๆ ที "มองไม่เห็นรอบแรก" (รอบหน้าเจอใหม่ค่อยกด)
@@ -523,8 +530,11 @@ class CookieBot:
                         self.log(f"    [relay] เจอนินจา (score={relay.score:.3f}) → เหม่ออยู่ รอบหน้าค่อยกด")
                     else:
                         time.sleep(random.uniform(*config.RELAY_REACT_RANGE))
-                        self.log(f"    [relay] เจอนินจา (score={relay.score:.3f}) → กดวิ่งต่อ")
-                        self.adb.tap(*config.BTN_RELAY)
+                        # กดตรงตำแหน่งที่ "เจอนินจาจริง" (relay.center) ไม่ใช่พิกัดตายตัว —
+                        # ปุ่มนินจาวิ่งเข้ามาไม่อยู่จุดเดิมเป๊ะ BTN_RELAY เป็นแค่ fallback
+                        tx, ty = relay.center or config.BTN_RELAY
+                        self.log(f"    [relay] เจอนินจา (score={relay.score:.3f}) → กดที่ ({tx},{ty})")
+                        self.adb.tap(tx, ty)
                         time.sleep(0.5)
 
                 # เจอหน้า Result → ไป STATE 3
