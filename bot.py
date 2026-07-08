@@ -492,11 +492,32 @@ class CookieBot:
 
         last_sig = None
         last_change = time.time()
-        last_relay_log = 0.0   # [diag] throttle log คะแนน relay (วินาที)
         try:
             while not self._stopping():
+                # timeout เช็คบนสุด — ให้ relay ใช้ continue กดซ้ำรัวได้โดยไม่ค้างลูปเลย timeout
+                # (v2 เดิมตัด continue เพราะกลัวจุดนี้ → ย้าย timeout มาบน แก้ได้ทั้งคู่)
                 t = time.time() - start_time
+                if t >= config.RUN_STATE_TIMEOUT:
+                    self.log(f"[WARN] State 2 เกิน {config.RUN_STATE_TIMEOUT}s → บังคับไป STATE 3")
+                    return State.RESULT
+
                 screen = self._cap()
+
+                # เจอนินจา relay → กดทันที + continue กดซ้ำรัว ๆ ตอนนินจายังโชว์ (แบบ v1)
+                # ต้องเช็ค "ก่อน" ทุกอย่าง + ใช้ find (สเกลเดียว เร็ว) ไม่ใช่ find_multiscale —
+                # ยิ่งหน่วง capture→tap นาน นินจา (เป้าเคลื่อนที่) ยิ่งวิ่งพ้นจุด กดไม่ทัน
+                relay = vision.find(screen, config.IMG_RELAY, config.RELAY_THRESHOLD)
+                if relay.found:
+                    # นินจาเป็น sprite วิ่งเคลื่อนที่ → กดตรงตำแหน่งที่ "ตรวจเจอจริง" (relay.center)
+                    # และต้องใช้ tap ดิบ (input tap) ไม่ใช่ adb.tap() ที่ humanize เป็น
+                    # swipe-กดค้าง-ลากนิ้ว — เกมไม่รับ swipe เป็นการแตะปุ่มนินจา (กดไม่ติด)
+                    # รัว 3 ทีเร็ว ๆ กันนินจาขยับพ้นจุด
+                    cx, cy = relay.center or config.BTN_RELAY
+                    for _ in range(3):
+                        self.adb._input(["tap", cx, cy])
+                        time.sleep(0.05)
+                    self.log(f"    [relay] เจอนินจาที่ ({cx},{cy}) score={relay.score:.3f} → กด")
+                    continue
 
                 # ตรวจจอค้าง (inactive) — เฉพาะเมื่อเปิดโหมด
                 if config.PREVENT_INACTIVE and screen is not None:
@@ -513,30 +534,6 @@ class CookieBot:
                         last_change = time.time()
                     last_sig = sig
 
-                # เจอนินจา relay → กดวิ่งต่อ (ห้าม continue — ต้องไหลลงไปเช็ค Result/timeout เสมอ
-                # ไม่งั้น relay ที่ match ค้าง เช่น false positive หรือกดปุ่มไม่ติด
-                # จะขังลูปนี้ไว้โดยไม่มี RUN_STATE_TIMEOUT คุม)
-                # find_multiscale: ทนสเกล template เพี้ยนจากจอจริงเล็กน้อย (เหมือน Fast Start)
-                relay = vision.find_multiscale(screen, config.IMG_RELAY, config.RELAY_THRESHOLD)
-                # [diag] log คะแนน relay ที่ดีที่สุดทุก ~3 วิ แม้ยังไม่ถึง threshold —
-                # ดูว่าตอนนินจาโผล่จริงคะแนนแตะเท่าไหร่ (ลบบล็อกนี้ออกได้เมื่อจูนเสร็จ)
-                if time.time() - last_relay_log >= 3.0:
-                    self.log(f"    [relay][diag] best score={relay.score:.3f} (th={config.RELAY_THRESHOLD})")
-                    last_relay_log = time.time()
-                if relay.found:
-                    # ตอบสนองแบบคน: เดิมกดภายใน RESULT_CHECK_INTERVAL เป๊ะทุกครั้ง —
-                    # หน่วง react สุ่มก่อนกด และนาน ๆ ที "มองไม่เห็นรอบแรก" (รอบหน้าเจอใหม่ค่อยกด)
-                    if random.random() < config.RELAY_MISS_CHANCE:
-                        self.log(f"    [relay] เจอนินจา (score={relay.score:.3f}) → เหม่ออยู่ รอบหน้าค่อยกด")
-                    else:
-                        time.sleep(random.uniform(*config.RELAY_REACT_RANGE))
-                        # กดตรงตำแหน่งที่ "เจอนินจาจริง" (relay.center) ไม่ใช่พิกัดตายตัว —
-                        # ปุ่มนินจาวิ่งเข้ามาไม่อยู่จุดเดิมเป๊ะ BTN_RELAY เป็นแค่ fallback
-                        tx, ty = relay.center or config.BTN_RELAY
-                        self.log(f"    [relay] เจอนินจา (score={relay.score:.3f}) → กดที่ ({tx},{ty})")
-                        self.adb.tap(tx, ty)
-                        time.sleep(0.5)
-
                 # เจอหน้า Result → ไป STATE 3
                 result = vision.find(screen, config.IMG_RESULT)
                 if result.found:
@@ -544,11 +541,9 @@ class CookieBot:
                              f"หลังกด {jump_count[0]} ครั้ง → STATE 3")
                     return State.RESULT
 
-                if t >= config.RUN_STATE_TIMEOUT:
-                    self.log(f"[WARN] State 2 เกิน {config.RUN_STATE_TIMEOUT}s → บังคับไป STATE 3")
-                    return State.RESULT
-
-                time.sleep(config.RESULT_CHECK_INTERVAL)
+                # poll ถี่ (0.12s) ให้ตรวจเจอนินจา + กดไว ไม่ต้องรอ RESULT_CHECK_INTERVAL (0.5s)
+                # นินจาโผล่แวบเดียว — loop ยิ่งเร็ว ยิ่งจับทันก่อนวิ่งพ้น
+                time.sleep(config.RELAY_POLL_INTERVAL)
         finally:
             jump_stop.set()
             # รอ thread กระโดดจบก่อน — กันยิง tap ค้างท่อไปโดนปุ่มบนหน้า Result
