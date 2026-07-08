@@ -11,6 +11,7 @@ adb.py — ชั้นสื่อสารกับอีมูเลเตอ
 """
 import os
 import sys
+import math
 import random
 import threading
 import subprocess
@@ -160,6 +161,19 @@ class Adb:
         y = min(config.SCREEN_H - 1, max(0, int(y)))
         return x, y
 
+    @staticmethod
+    def _travel_end(x, y, rng):
+        """จุดปลายของนิ้วตอนยกออก — นิ้วคนจริงขยับเล็กน้อยระหว่างสัมผัสเสมอ ไม่นิ่งสนิท 0px
+        (เดิม swipe จุดเดิม→จุดเดิมเป๊ะทุกครั้ง = ลายเซ็นหุ่นระดับ touch event)"""
+        if not getattr(config, "HUMAN_TOUCH_TRAVEL", False):
+            return int(x), int(y)
+        lo, hi = rng
+        d = random.uniform(float(lo), float(hi))
+        a = random.uniform(0, 2 * math.pi)
+        ex = min(config.SCREEN_W - 1, max(0, int(x + d * math.cos(a))))
+        ey = min(config.SCREEN_H - 1, max(0, int(y + d * math.sin(a))))
+        return ex, ey
+
     def _input(self, args, timeout=None):
         """
         ยิงคำสั่ง `adb shell input ...` — ปกติ serialize ด้วย lock เพราะเธรดกระโดดกับ
@@ -201,13 +215,15 @@ class Adb:
         if getattr(config, "HUMAN_TAP_HOLD", False):
             lo, hi = config.HUMAN_TAP_HOLD_MS
             ms = random.randint(int(lo), int(hi))
-            return self._input(["swipe", x, y, x, y, ms])
+            ex, ey = self._travel_end(x, y, config.HUMAN_TAP_TRAVEL)
+            return self._input(["swipe", x, y, ex, ey, ms])
         return self._input(["tap", x, y])
 
     def hold(self, x, y, seconds):
-        """กดค้างที่ (x,y) เป็นเวลา seconds (ทำผ่าน swipe จุดเดิม) — คืน True เมื่อสำเร็จ"""
+        """กดค้างที่ (x,y) เป็นเวลา seconds (ผ่าน swipe + นิ้วขยับเล็กน้อย) — คืน True เมื่อสำเร็จ"""
         ms = int(seconds * 1000)
-        return self._input(["swipe", int(x), int(y), int(x), int(y), ms],
+        ex, ey = self._travel_end(x, y, config.HUMAN_TAP_TRAVEL)
+        return self._input(["swipe", int(x), int(y), ex, ey, ms],
                            timeout=seconds + config.ADB_CMD_TIMEOUT)
 
     def swipe(self, x1, y1, x2, y2, duration_ms=300):
@@ -215,9 +231,13 @@ class Adb:
         return self._input(["swipe", int(x1), int(y1), int(x2), int(y2), int(duration_ms)],
                            timeout=duration_ms / 1000 + config.ADB_CMD_TIMEOUT)
 
-    def slide(self, jitter=None):
-        """สไลด์ = กดค้างปุ่ม Slide (มี jitter). ใช้ config.JUMP_JITTER เป็นค่า default
+    def slide(self, jitter=None, hold_sec=None):
+        """สไลด์ = กดค้างปุ่ม Slide (มี jitter) + นิ้วลากเลื่อนระหว่างกดค้าง
+        hold_sec = ระยะกดค้าง (วินาที) — ไม่ส่งมาใช้ config.SLIDE_HOLD_SEC (ค่าตายตัวเดิม)
         คืน True เมื่อสำเร็จ"""
         j = config.JUMP_JITTER if jitter is None else jitter
         x, y = self._jit(*config.BTN_SLIDE, j)
-        return self.hold(x, y, config.SLIDE_HOLD_SEC)
+        sec = config.SLIDE_HOLD_SEC if hold_sec is None else hold_sec
+        ex, ey = self._travel_end(x, y, config.HUMAN_SLIDE_TRAVEL)
+        return self._input(["swipe", x, y, ex, ey, int(sec * 1000)],
+                           timeout=sec + config.ADB_CMD_TIMEOUT)
