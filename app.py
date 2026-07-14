@@ -1,9 +1,13 @@
 """
-app.py — หน้าต่างควบคุมบอท (GUI, tkinter) — V2 Cockpit layout
-==============================================================
-2 คอลัมน์: ซ้าย = ควบคุม/ตั้งค่า | ขวา = สถิติสด + สถานะ V2 + กราฟเหรียญ + log
-ของใหม่ V2: ไฟสถานะ ADB + ปุ่มกู้การเชื่อมต่อ, แถบพัก/ความล้า, กราฟเหรียญ 20 รอบ,
-ปรับขนาด UI ได้ (จำค่าลง settings.json)
+app.py — หน้าต่างควบคุมบอท (GUI, tkinter) — V3
+==============================================
+โครงใหม่ทั้งหมด (จาก V2 cockpit 2 คอลัมน์):
+  - แถบควบคุมหลัก (เริ่ม/หยุด + โหมด + จำนวนรอบ + สรุปบูสต์) อยู่บนสุด "ตลอดเวลา"
+  - เนื้อหาแบ่ง 3 แท็บ: 📊 แดชบอร์ด / 🎁 ตั้งค่าบูสต์ / ⚙️ ระบบ
+  - log อยู่ล่างสุดเสมอ ไม่ว่าเปิดแท็บไหน
+  - ตั้งค่าบูสต์ "บันทึกอัตโนมัติ" ทันทีที่ติ๊ก (ไม่มีปุ่มบันทึกให้ลืมกด)
+    แก้ตอนบอทรันได้ มีผลตั้งแต่ด่านถัดไป
+  - พรีเซ็ต: เซฟชุดตั้งค่าบูสต์เป็นชื่อ เลือกจากรายการแล้วใช้ทันที
 
 รัน:  python app.py   (หรือดับเบิลคลิก run_gui.bat)
 """
@@ -13,7 +17,7 @@ import threading
 import time
 import tkinter as tk
 from collections import deque
-from tkinter import scrolledtext
+from tkinter import scrolledtext, ttk
 
 import config
 from adb import Adb
@@ -34,6 +38,8 @@ C_GREEN    = "#34d399"
 C_RED      = "#f87171"
 C_BLUE     = "#3b82f6"
 C_BLUE_HV  = "#2563eb"
+C_EMERALD  = "#10b981"
+C_EMER_HV  = "#059669"
 
 
 def bind_hover(btn, bg, hover_bg, fg="#ffffff", hover_fg="#ffffff"):
@@ -43,6 +49,8 @@ def bind_hover(btn, bg, hover_bg, fg="#ffffff", hover_fg="#ffffff"):
 
 
 class PillSelector:
+    """แถวปุ่มแบบ pill เลือกได้ 1 ค่า (ใช้กับโหมดบอท / แท็บ / ขนาด UI)"""
+
     def __init__(self, parent, variable, options, command=None, font=("Segoe UI", 9, "bold")):
         self.variable = variable
         self.command = command
@@ -85,6 +93,59 @@ class PillSelector:
             self.update_ui()
 
 
+class ModernCheck(tk.Frame):
+    """เช็คบ็อกซ์สไตล์โมเดิร์น: กล่องสี่เหลี่ยม ✓ ขาวบนพื้นน้ำเงิน + กดได้ทั้งแถว + ไฮไลต์ตอนชี้
+    — แทน tk.Checkbutton เดิมที่ indicator เป็นกล่อง 3D สีเทายุคเก่า (ตัวการทำแอปดูโบราณ)"""
+
+    def __init__(self, parent, text, variable, command=None, font=None, bg=C_CARD):
+        super().__init__(parent, bg=bg, cursor="hand2", padx=2, pady=3)
+        self.var = variable
+        self.command = command
+        self.box = tk.Label(self, text=" ", width=2, bd=0, font=("Segoe UI", 9, "bold"),
+                            highlightthickness=1, highlightbackground=C_LINE)
+        self.box.pack(side="left", padx=(6, 0))
+        self.lbl = tk.Label(self, text=text, bg=bg, fg=C_TEXT, anchor="w",
+                            font=font or ("Segoe UI", 10))
+        self.lbl.pack(side="left", fill="x", expand=True, padx=(9, 6))
+        for w in (self, self.box, self.lbl):
+            w.bind("<Button-1>", self._toggle)
+            w.bind("<Enter>", self._hover_on)
+            w.bind("<Leave>", self._hover_off)
+        # sync ตามค่า var เสมอ (รวมถึงตอนพรีเซ็ตเซ็ตค่าจากข้างนอก)
+        self.var.trace_add("write", lambda *a: self._sync())
+        self._sync()
+
+    def _toggle(self, *_):
+        self.var.set(not self.var.get())   # trace จะเรียก _sync ให้เอง
+        if self.command:
+            self.command()
+
+    def _hover_on(self, *_):
+        try:
+            self.box.config(highlightbackground=C_BLUE)
+            self.lbl.config(fg="#ffffff")
+        except tk.TclError:
+            pass
+
+    def _hover_off(self, *_):
+        try:
+            self.box.config(highlightbackground=C_BLUE if self.var.get() else C_LINE)
+            self.lbl.config(fg=C_TEXT)
+        except tk.TclError:
+            pass
+
+    def _sync(self):
+        try:
+            if self.var.get():
+                self.box.config(text="✓", bg=C_BLUE, fg="#ffffff",
+                                highlightbackground=C_BLUE)
+            else:
+                self.box.config(text=" ", bg=C_FIELD, fg=C_FIELD,
+                                highlightbackground=C_LINE)
+        except tk.TclError:
+            pass   # widget ถูกทำลายไปแล้ว (เช่นตอนเปลี่ยนขนาด UI) — เงียบไว้
+
+
 class App:
     def __init__(self, root):
         self.root = root
@@ -125,6 +186,9 @@ class App:
         self.fatigue_var      = tk.StringVar(value="ความล้า -")
         saved_mode = str(config.BOT_MODE or "coin").strip().lower()
         self.mode_var  = tk.StringVar(value=saved_mode if saved_mode in ("coin", "box", "exp") else "coin")
+        self.tab_var   = tk.StringVar(value="dash")   # แท็บที่เปิดอยู่ (จำข้ามการ rebuild)
+        self.boost_saved_var   = tk.StringVar(value="")  # ข้อความ "บันทึกอัตโนมัติแล้ว" ในแท็บบูสต์
+        self.boost_summary_var = tk.StringVar(value="")  # สรุปบูสต์บนแถบควบคุม
         # ป้ายสถิติที่คำว่า "เหรียญ/EXP" เปลี่ยนตามโหมดที่เลือก (exp อ่านแถว XP หน้า Result)
         self.unit_total_var  = tk.StringVar()
         self.unit_rate_var   = tk.StringVar()
@@ -153,7 +217,7 @@ class App:
                           + ", ".join(config.SETTINGS_APPLIED) + ")")
 
     # ============================================================
-    # UI
+    # ตัวช่วยสร้าง widget (ใช้ร่วมทุกแท็บ)
     # ============================================================
     def _F(self, size):
         """ขนาดฟอนต์ตามสเกล UI ที่เลือก"""
@@ -163,6 +227,56 @@ class App:
             s = 1.0
         return max(7, int(round(size * s)))
 
+    def _make_card(self, parent, **kwargs):
+        return tk.Frame(parent, bg=C_CARD, highlightthickness=1,
+                        highlightbackground=C_LINE, **kwargs)
+
+    def _card_header(self, card, text, hint=None):
+        """หัวข้อการ์ด + คำอธิบายสั้น (hint) ใต้หัวข้อ"""
+        tk.Label(card, text=text, bg=C_CARD, fg=C_GOLD,
+                 font=("Segoe UI", self._F(10), "bold")).pack(anchor="w", padx=14, pady=(10, 0))
+        if hint:
+            tk.Label(card, text=hint, bg=C_CARD, fg=C_MUTED, justify="left",
+                     font=("Segoe UI", self._F(8))).pack(anchor="w", padx=14, pady=(1, 4))
+
+    def _make_btn(self, parent, text, command, bg=C_BLUE, hover_bg=C_BLUE_HV,
+                  fg="#ffffff", hover_fg="#ffffff", size=9, **kwargs):
+        btn = tk.Button(parent, text=text, command=command, bg=bg, fg=fg,
+                        activebackground=hover_bg, activeforeground=hover_fg,
+                        disabledforeground=C_DIM, font=("Segoe UI", self._F(size), "bold"),
+                        bd=0, relief="flat", cursor="hand2", **kwargs)
+        bind_hover(btn, bg, hover_bg, fg, hover_fg)
+        return btn
+
+    def _make_entry(self, parent, textvariable, width, justify="left"):
+        border_frame = tk.Frame(parent, bg=C_LINE, highlightthickness=0)
+        inner_frame = tk.Frame(border_frame, bg=C_FIELD, padx=6, pady=4)
+        inner_frame.pack(fill="both", expand=True, padx=1, pady=1)
+        entry = tk.Entry(inner_frame, textvariable=textvariable, width=width,
+                         bg=C_FIELD, fg=C_TEXT, insertbackground=C_TEXT,
+                         font=("Consolas", self._F(10)), bd=0, relief="flat", justify=justify)
+        entry.pack(fill="both", expand=True)
+
+        def on_focus_in(e):
+            if entry["state"] == "normal":
+                border_frame.config(bg=C_BLUE)
+
+        def on_focus_out(e):
+            if entry["state"] == "normal":
+                border_frame.config(bg=C_LINE)
+
+        entry.bind("<FocusIn>", on_focus_in)
+        entry.bind("<FocusOut>", on_focus_out)
+        return border_frame, entry
+
+    def _make_check(self, parent, text, var, command=None):
+        """เช็คบ็อกซ์สไตล์โมเดิร์น (ดู class ModernCheck) — .pack/.grid ได้เหมือน widget ปกติ"""
+        return ModernCheck(parent, text, var, command=command,
+                           font=("Segoe UI", self._F(10)))
+
+    # ============================================================
+    # โครง UI หลัก
+    # ============================================================
     def _build_ui(self):
         r = self.root
         F = self._F
@@ -171,54 +285,161 @@ class App:
         except Exception:
             s = 1.0
         r.title(f"{config.APP_NAME} v{config.APP_VERSION}")
-        r.geometry(f"{int(960 * s)}x{int(640 * s)}")
-        r.minsize(int(860 * s), int(560 * s))
+        r.geometry(f"{int(980 * s)}x{int(690 * s)}")
+        r.minsize(int(900 * s), int(600 * s))
         r.configure(bg=C_BG)
 
-        # ---------- ตัวช่วยจัดสไตล์ ----------
-        def make_card(parent, **kwargs):
-            return tk.Frame(parent, bg=C_CARD, highlightthickness=1,
-                            highlightbackground=C_LINE, **kwargs)
+        # ttk (Combobox) ธีมมืดให้เข้ากับแอป — ค่า default ของ Windows เป็นกล่องขาวยุคเก่า
+        style = ttk.Style(r)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        style.configure("Dark.TCombobox",
+                        fieldbackground=C_FIELD, background=C_CARD,
+                        foreground=C_TEXT, arrowcolor=C_TEXT,
+                        bordercolor=C_LINE, lightcolor=C_CARD, darkcolor=C_CARD,
+                        insertcolor=C_TEXT,
+                        selectbackground=C_FIELD, selectforeground=C_TEXT)
+        style.map("Dark.TCombobox",
+                  fieldbackground=[("readonly", C_FIELD), ("disabled", C_CARD)],
+                  foreground=[("disabled", C_DIM)])
+        r.option_add("*TCombobox*Listbox.background", C_FIELD)
+        r.option_add("*TCombobox*Listbox.foreground", C_TEXT)
+        r.option_add("*TCombobox*Listbox.selectBackground", C_BLUE)
+        r.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
 
-        def make_btn(parent, text, command, bg=C_BLUE, fg="#ffffff",
-                     hover_bg=C_BLUE_HV, hover_fg="#ffffff",
-                     font=None, **kwargs):
-            font = font or ("Segoe UI", F(9), "bold")
-            btn = tk.Button(parent, text=text, command=command, bg=bg, fg=fg,
-                            activebackground=hover_bg, activeforeground=hover_fg,
-                            disabledforeground=C_DIM, font=font, bd=0,
-                            relief="flat", cursor="hand2", **kwargs)
-            bind_hover(btn, bg, hover_bg, fg, hover_fg)
-            return btn
+        # ---------- 1) แถบหัว: ชื่อแอป | ไฟ ADB | ป้ายสถานะบอท ----------
+        bar = tk.Frame(r, bg=C_BAR)
+        bar.pack(fill="x")
+        bar_in = tk.Frame(bar, bg=C_BAR)
+        bar_in.pack(fill="x", padx=18, pady=8)
 
-        def make_entry(parent, textvariable, width, font=None, justify="left"):
-            font = font or ("Consolas", F(10))
-            border_frame = tk.Frame(parent, bg=C_LINE, highlightthickness=0)
-            inner_frame = tk.Frame(border_frame, bg=C_FIELD, padx=6, pady=4)
-            inner_frame.pack(fill="both", expand=True, padx=1, pady=1)
-            entry = tk.Entry(inner_frame, textvariable=textvariable, width=width,
-                             bg=C_FIELD, fg=C_TEXT, insertbackground=C_TEXT,
-                             font=font, bd=0, relief="flat", justify=justify)
-            entry.pack(fill="both", expand=True)
-            def on_focus_in(e):
-                if entry["state"] == "normal":
-                    border_frame.config(bg=C_BLUE)
-            def on_focus_out(e):
-                if entry["state"] == "normal":
-                    border_frame.config(bg=C_LINE)
-            entry.bind("<FocusIn>", on_focus_in)
-            entry.bind("<FocusOut>", on_focus_out)
-            return border_frame, entry
+        tk.Label(bar_in, text="🍪 CookiePilot", font=("Segoe UI", F(14), "bold"),
+                 bg=C_BAR, fg=C_GOLD).pack(side="left")
+        tk.Label(bar_in, text=f"v{config.APP_VERSION}", font=("Segoe UI", F(9)),
+                 bg=C_BAR, fg=C_DIM).pack(side="left", padx=(6, 0))
 
-        def side_label(parent, text, pady=(10, 4)):
-            tk.Label(parent, text=text, bg=C_CARD, fg=C_MUTED,
-                     font=("Segoe UI", F(9), "bold")).pack(anchor="w", padx=12, pady=pady)
+        self.status_pill = tk.Frame(bar_in, bg="#3f1d1d")
+        self.status_pill.pack(side="right")
+        self.status_lbl = tk.Label(self.status_pill, textvariable=self.status_var,
+                                   font=("Segoe UI", F(9), "bold"), bg="#3f1d1d",
+                                   fg=C_RED, padx=12, pady=3)
+        self.status_lbl.pack()
 
-        def make_stat(parent, col, caption, var, value_fg, framed):
+        self.adb_dot_lbl = tk.Label(bar_in, textvariable=self.adb_dot_var,
+                                    font=("Segoe UI", F(9), "bold"), bg=C_BAR, fg=C_DIM)
+        self.adb_dot_lbl.pack(side="right", padx=(0, 12))
+        tk.Frame(r, bg=C_LINE, height=1).pack(fill="x")
+
+        # ---------- 2) แถบควบคุมหลัก (เห็นตลอดเวลา ไม่ว่าอยู่แท็บไหน) ----------
+        ctrl = self._make_card(r)
+        ctrl.pack(fill="x", padx=14, pady=(10, 0))
+        ctrl_in = tk.Frame(ctrl, bg=C_CARD)
+        ctrl_in.pack(fill="x", padx=10, pady=8)
+
+        self.toggle_btn = tk.Button(ctrl_in, command=self.toggle, font=("Segoe UI", F(11), "bold"),
+                                    bd=0, relief="flat", cursor="hand2")
+        self._update_toggle_btn("stopped")
+        self.toggle_btn.pack(side="left", ipadx=18, ipady=6)
+
+        tk.Label(ctrl_in, text="โหมด", bg=C_CARD, fg=C_MUTED,
+                 font=("Segoe UI", F(9), "bold")).pack(side="left", padx=(16, 6))
+        self.mode_selector = PillSelector(ctrl_in, self.mode_var, [
+            ("🪙 เหรียญ", "coin"),
+            ("📦 กล่อง", "box"),
+            ("⭐ EXP", "exp"),
+        ], command=self._apply_mode_labels, font=("Segoe UI", F(9), "bold"))
+        self.mode_selector.frame.pack(side="left")
+
+        tk.Label(ctrl_in, text="รอบ", bg=C_CARD, fg=C_MUTED,
+                 font=("Segoe UI", F(9), "bold")).pack(side="left", padx=(14, 6))
+        loops_border, self.loops_entry = self._make_entry(ctrl_in, self.loops_var,
+                                                          width=5, justify="center")
+        loops_border.pack(side="left")
+        tk.Label(ctrl_in, text="(0 = ไม่จำกัด)", bg=C_CARD, fg=C_DIM,
+                 font=("Segoe UI", F(8))).pack(side="left", padx=(5, 0))
+
+        # สรุปบูสต์ที่ตั้งไว้ — คลิกแล้วเด้งไปแท็บตั้งค่าบูสต์
+        self.boost_summary_lbl = tk.Label(ctrl_in, textvariable=self.boost_summary_var,
+                                          bg=C_CARD, fg=C_MUTED, cursor="hand2",
+                                          font=("Segoe UI", F(8)))
+        self.boost_summary_lbl.pack(side="right")
+        self.boost_summary_lbl.bind("<Button-1>",
+                                    lambda e: self.tab_selector.select("boost"))
+
+        # ---------- 3) แถบแท็บ ----------
+        tabs_row = tk.Frame(r, bg=C_BG)
+        tabs_row.pack(fill="x", padx=14, pady=(8, 0))
+        self.tab_selector = PillSelector(tabs_row, self.tab_var, [
+            ("📊 แดชบอร์ด", "dash"),
+            ("🎁 ตั้งค่าบูสต์", "boost"),
+            ("⚙️ ระบบ", "sys"),
+        ], command=self._on_tab_changed, font=("Segoe UI", F(10), "bold"))
+        self.tab_selector.frame.pack(fill="x")
+
+        # ---------- 4) เนื้อหาแท็บ ----------
+        cont = tk.Frame(r, bg=C_BG)
+        cont.pack(fill="both", expand=True, padx=14, pady=(8, 0))
+        cont.rowconfigure(0, weight=1)
+        cont.columnconfigure(0, weight=1)
+        self.tab_frames = {}
+        for key, builder in (("dash", self._build_tab_dashboard),
+                             ("boost", self._build_tab_boosts),
+                             ("sys", self._build_tab_system)):
+            f = tk.Frame(cont, bg=C_BG)
+            f.grid(row=0, column=0, sticky="nsew")
+            builder(f)
+            self.tab_frames[key] = f
+
+        # ---------- 5) Log (ล่างเสมอ) ----------
+        card_log = self._make_card(r)
+        card_log.pack(fill="x", padx=14, pady=(8, 12))
+        tk.Label(card_log, text="📝 บันทึกการทำงาน (Log)", font=("Segoe UI", F(9), "bold"),
+                 bg=C_CARD, fg=C_MUTED).pack(anchor="w", padx=12, pady=(6, 2))
+        self.log = scrolledtext.ScrolledText(card_log, font=("Consolas", F(9)), bg=C_FIELD,
+                                             fg="#e2e8f0", insertbackground="white", wrap="word",
+                                             bd=0, highlightthickness=0, height=9)
+        self.log.pack(fill="both", expand=True, padx=12, pady=(0, 8))
+
+        # สีข้อความ log ตามประเภท
+        self.log.tag_config("tag_ok", foreground=C_GREEN)
+        self.log.tag_config("tag_err", foreground=C_RED)
+        self.log.tag_config("tag_nav", foreground="#60a5fa")
+        self.log.tag_config("tag_box", foreground="#fb923c")
+        self.log.tag_config("tag_info", foreground=C_GOLD)
+        self.log.tag_config("tag_app", foreground="#c084fc")
+        self.log.tag_config("tag_human", foreground="#a3e635")
+        self.log.tag_config("tag_normal", foreground="#e2e8f0")
+
+        self._set_status("running" if self.running else "stopped")
+        self._set_adb_dot(self._adb_state)
+        self._refresh_boost_summary()
+        self._on_tab_changed()
+        self._draw_graph()
+        r.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    def _on_tab_changed(self):
+        tab = self.tab_var.get()
+        if tab not in self.tab_frames:
+            tab = "dash"
+        self.tab_frames[tab].tkraise()
+
+    # ============================================================
+    # แท็บ 1: แดชบอร์ด (สถิติสด + สถานะ V2 + กราฟ)
+    # ============================================================
+    def _build_tab_dashboard(self, parent):
+        F = self._F
+        try:
+            s = float(self.scale_var.get())
+        except Exception:
+            s = 1.0
+
+        def make_stat(row, col, caption, var, value_fg, framed):
             """ช่องสถิติ 1 ช่อง — framed=True มีกรอบ (chip หลัก) / False ไม่มีกรอบ (สถิติย่อย)
             caption เป็น str หรือ StringVar ก็ได้ (ป้ายเหรียญ/EXP เปลี่ยนตามโหมด)"""
             bg = C_CARD_IN if framed else C_CARD
-            box = tk.Frame(parent, bg=bg, highlightthickness=1 if framed else 0,
+            box = tk.Frame(row, bg=bg, highlightthickness=1 if framed else 0,
                            highlightbackground=C_LINE)
             box.grid(row=0, column=col, sticky="nsew", padx=4)
             cap_kw = ({"textvariable": caption} if isinstance(caption, tk.StringVar)
@@ -228,105 +449,14 @@ class App:
             tk.Label(box, textvariable=var, font=("Segoe UI", F(13) if framed else F(12), "bold"),
                      bg=bg, fg=value_fg).pack(pady=(1, 8) if framed else (2, 0))
 
-        # ---------- 1) แถบหัว: ชื่อแอป | ไฟ ADB | ป้ายสถานะบอท ----------
-        bar = tk.Frame(r, bg=C_BAR)
-        bar.pack(fill="x")
-        bar_in = tk.Frame(bar, bg=C_BAR)
-        bar_in.pack(fill="x", padx=18, pady=10)
-
-        tk.Label(bar_in, text="🍪 CookiePilot", font=("Segoe UI", F(15), "bold"),
-                 bg=C_BAR, fg=C_GOLD).pack(side="left")
-        tk.Label(bar_in, text=f"v{config.APP_VERSION}", font=("Segoe UI", F(9)),
-                 bg=C_BAR, fg=C_DIM).pack(side="left", padx=(6, 0))
-
-        self.status_pill = tk.Frame(bar_in, bg="#3f1d1d")
-        self.status_pill.pack(side="right")
-        self.status_lbl = tk.Label(self.status_pill, textvariable=self.status_var,
-                                   font=("Segoe UI", F(9), "bold"), bg="#3f1d1d",
-                                   fg=C_RED, padx=12, pady=4)
-        self.status_lbl.pack()
-
-        self.adb_dot_lbl = tk.Label(bar_in, textvariable=self.adb_dot_var,
-                                    font=("Segoe UI", F(9), "bold"), bg=C_BAR, fg=C_DIM)
-        self.adb_dot_lbl.pack(side="right", padx=(0, 12))
-        tk.Frame(r, bg=C_LINE, height=1).pack(fill="x")
-
-        # ---------- โครง 2 คอลัมน์ ----------
-        body = tk.Frame(r, bg=C_BG)
-        body.pack(fill="both", expand=True, padx=14, pady=12)
-        body.columnconfigure(0, minsize=int(280 * s), weight=0)
-        body.columnconfigure(1, weight=1)
-        body.rowconfigure(0, weight=1)
-
-        # ============ คอลัมน์ซ้าย: ควบคุม + ตั้งค่า ============
-        left = make_card(body)
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
-
-        side_label(left, "โหมดบอท", pady=(12, 4))
-        self.mode_selector = PillSelector(left, self.mode_var, [
-            ("🪙 เหรียญ", "coin"),
-            ("📦 กล่อง", "box"),
-            ("⭐ EXP", "exp"),
-        ], command=self._apply_mode_labels, font=("Segoe UI", F(9), "bold"))
-        self.mode_selector.frame.pack(fill="x", padx=12)
-
-        side_label(left, "จำนวนรอบ (0 = ไม่จำกัด)")
-        loops_row = tk.Frame(left, bg=C_CARD)
-        loops_row.pack(fill="x", padx=12)
-        loops_border, self.loops_entry = make_entry(loops_row, self.loops_var, width=8, justify="center")
-        loops_border.pack(side="left")
-
-        self.toggle_btn = tk.Button(left, command=self.toggle, font=("Segoe UI", F(13), "bold"),
-                                    bd=0, relief="flat", cursor="hand2")
-        self._update_toggle_btn("stopped")
-        self.toggle_btn.pack(fill="x", padx=12, pady=(14, 4), ipady=8)
-
-        tk.Frame(left, bg=C_LINE, height=1).pack(fill="x", padx=12, pady=(12, 0))
-
-        side_label(left, "⚙️ การเชื่อมต่อ (ADB)")
-        tk.Label(left, text="ADB Path", bg=C_CARD, fg=C_DIM,
-                 font=("Segoe UI", F(8))).pack(anchor="w", padx=12)
-        adb_border, self.adb_entry = make_entry(left, self.adb_var, width=26)
-        adb_border.pack(fill="x", padx=12, pady=(2, 6))
-        tk.Label(left, text="Device", bg=C_CARD, fg=C_DIM,
-                 font=("Segoe UI", F(8))).pack(anchor="w", padx=12)
-        dev_border, self.dev_entry = make_entry(left, self.dev_var, width=18)
-        dev_border.pack(fill="x", padx=12, pady=(2, 8))
-
-        btn_row = tk.Frame(left, bg=C_CARD)
-        btn_row.pack(fill="x", padx=12)
-        btn_row.columnconfigure(0, weight=1)
-        btn_row.columnconfigure(1, weight=1)
-        self.auto_find_btn = make_btn(btn_row, text="หาอัตโนมัติ", command=self.auto_find_adb, pady=4)
-        self.auto_find_btn.grid(row=0, column=0, sticky="ew", padx=(0, 3))
-        self.test_btn = make_btn(btn_row, text="ทดสอบ", command=self.test_connection, pady=4)
-        self.test_btn.grid(row=0, column=1, sticky="ew", padx=(3, 0))
-        # ปุ่มกู้: รีสตาร์ต adb server → ถ้ายัง offline สั่งรีบูต LDPlayer ผ่าน ldconsole
-        self.recover_btn = make_btn(left, text="🔌 กู้การเชื่อมต่อ (device offline)",
-                                    command=self.recover_connection,
-                                    bg="#7c3aed", hover_bg="#6d28d9", pady=4)
-        self.recover_btn.pack(fill="x", padx=12, pady=(6, 4))
-
-        tk.Frame(left, bg=C_LINE, height=1).pack(fill="x", padx=12, pady=(12, 0))
-        side_label(left, "ขนาดหน้าต่าง (UI)")
-        self.scale_selector = PillSelector(left, self.scale_var, [
-            ("90%", "0.9"), ("100%", "1.0"), ("115%", "1.15"), ("130%", "1.3"),
-        ], command=self._apply_scale, font=("Segoe UI", F(8), "bold"))
-        self.scale_selector.frame.pack(fill="x", padx=12, pady=(0, 12))
-
-        # ============ คอลัมน์ขวา: สถิติ + สถานะ V2 + กราฟ + log ============
-        right = tk.Frame(body, bg=C_BG)
-        right.grid(row=0, column=1, sticky="nsew")
-
-        # --- สถิติสด ---
-        hero = make_card(right)
+        hero = self._make_card(parent)
         hero.pack(fill="x")
         hero_top = tk.Frame(hero, bg=C_CARD)
         hero_top.pack(fill="x", padx=12, pady=(10, 0))
         tk.Label(hero_top, textvariable=self.unit_total_var, font=("Segoe UI", F(9), "bold"),
                  bg=C_CARD, fg=C_MUTED).pack(side="left")
         tk.Label(hero, textvariable=self.total_coins_var,
-                 font=("Segoe UI", F(30), "bold"), bg=C_CARD, fg=C_GOLD).pack(anchor="w", padx=12)
+                 font=("Segoe UI", F(28), "bold"), bg=C_CARD, fg=C_GOLD).pack(anchor="w", padx=12)
 
         chips = tk.Frame(hero, bg=C_CARD)
         chips.pack(fill="x", padx=8, pady=(4, 8))
@@ -345,8 +475,8 @@ class App:
         make_stat(mini, 2, "สูงสุด/รอบ", self.best_var, C_GOLD, framed=False)
 
         # --- แถบสถานะ V2 (พัก/ความล้า) + กราฟเหรียญ ---
-        v2 = make_card(right)
-        v2.pack(fill="x", pady=(8, 0))
+        v2 = self._make_card(parent)
+        v2.pack(fill="both", expand=True, pady=(8, 0))
         v2_row = tk.Frame(v2, bg=C_CARD)
         v2_row.pack(fill="x", padx=12, pady=(8, 4))
         self.v2_state_lbl = tk.Label(v2_row, textvariable=self.v2_state_var,
@@ -357,35 +487,244 @@ class App:
 
         tk.Label(v2, textvariable=self.unit_graph_var, font=("Segoe UI", F(8), "bold"),
                  bg=C_CARD, fg=C_DIM).pack(anchor="w", padx=12)
-        self.graph = tk.Canvas(v2, height=int(64 * s), bg=C_CARD_IN, bd=0,
+        self.graph = tk.Canvas(v2, height=int(70 * s), bg=C_CARD_IN, bd=0,
                                highlightthickness=1, highlightbackground=C_LINE)
-        self.graph.pack(fill="x", padx=12, pady=(2, 10))
+        self.graph.pack(fill="both", expand=True, padx=12, pady=(2, 10))
         self.graph.bind("<Configure>", self._draw_graph)
 
-        # --- Log ---
-        card_log = make_card(right)
-        card_log.pack(fill="both", expand=True, pady=(8, 0))
-        tk.Label(card_log, text="📝 บันทึกการทำงาน (Log)", font=("Segoe UI", F(9), "bold"),
-                 bg=C_CARD, fg=C_MUTED).pack(anchor="w", padx=12, pady=(8, 2))
-        self.log = scrolledtext.ScrolledText(card_log, font=("Consolas", F(9)), bg=C_FIELD,
-                                             fg="#e2e8f0", insertbackground="white", wrap="word",
-                                             bd=0, highlightthickness=0)
-        self.log.pack(fill="both", expand=True, padx=12, pady=(0, 10))
+    # ============================================================
+    # แท็บ 2: ตั้งค่าบูสต์ — ติ๊กแล้ว "บันทึกอัตโนมัติ" ทันที + พรีเซ็ต
+    # ============================================================
+    def _build_tab_boosts(self, parent):
+        F = self._F
 
-        # สีข้อความ log ตามประเภท
-        self.log.tag_config("tag_ok", foreground=C_GREEN)
-        self.log.tag_config("tag_err", foreground=C_RED)
-        self.log.tag_config("tag_nav", foreground="#60a5fa")
-        self.log.tag_config("tag_box", foreground="#fb923c")
-        self.log.tag_config("tag_info", foreground=C_GOLD)
-        self.log.tag_config("tag_app", foreground="#c084fc")
-        self.log.tag_config("tag_human", foreground="#a3e635")
-        self.log.tag_config("tag_normal", foreground="#e2e8f0")
+        # ---------- พรีเซ็ต (บนสุด) ----------
+        pcard = self._make_card(parent)
+        pcard.pack(fill="x")
+        prow = tk.Frame(pcard, bg=C_CARD)
+        prow.pack(fill="x", padx=12, pady=8)
+        tk.Label(prow, text="📁 พรีเซ็ต", bg=C_CARD, fg=C_GOLD,
+                 font=("Segoe UI", F(9), "bold")).pack(side="left")
+        self.preset_var = tk.StringVar()
+        self.preset_combo = ttk.Combobox(prow, textvariable=self.preset_var, width=16,
+                                         font=("Segoe UI", F(9)), style="Dark.TCombobox",
+                                         values=sorted(self._presets_dict()))
+        self.preset_combo.pack(side="left", padx=(10, 6))
+        self.preset_combo.bind("<<ComboboxSelected>>", self._load_preset)
+        b1 = self._make_btn(prow, "💾 เซฟชุดนี้เป็นชื่อ", self._save_preset, size=8, pady=3)
+        b1.pack(side="left", padx=(0, 6), ipadx=8)
+        b2 = self._make_btn(prow, "🗑 ลบ", self._delete_preset,
+                            bg="#7f1d1d", hover_bg="#991b1b", size=8, pady=3)
+        b2.pack(side="left", ipadx=8)
+        tk.Label(prow, text="เลือกชื่อจากรายการ = ใช้ชุดนั้นทันที",
+                 bg=C_CARD, fg=C_DIM, font=("Segoe UI", F(8))).pack(side="left", padx=(10, 0))
+        # ป้าย "บันทึกอัตโนมัติแล้ว" มุมขวา
+        tk.Label(prow, textvariable=self.boost_saved_var, bg=C_CARD, fg=C_GREEN,
+                 font=("Segoe UI", F(8))).pack(side="right")
 
-        self._set_status("running" if self.running else "stopped")
-        self._set_adb_dot(self._adb_state)
-        self._draw_graph()
-        r.protocol("WM_DELETE_WINDOW", self.on_close)
+        # ---------- 2 คอลัมน์: ซ้าย = หน้าเตรียมตัว + ตอนเริ่มวิ่ง | ขวา = กล่องสุ่ม ----------
+        cols = tk.Frame(parent, bg=C_BG)
+        cols.pack(fill="both", expand=True, pady=(8, 0))
+        cols.columnconfigure(0, weight=2, uniform="b")
+        cols.columnconfigure(1, weight=3, uniform="b")
+        cols.rowconfigure(0, weight=1)
+
+        left = tk.Frame(cols, bg=C_BG)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        right = tk.Frame(cols, bg=C_BG)
+        right.grid(row=0, column=1, sticky="nsew")
+
+        # การ์ด: บูสต์หน้าเตรียมตัว
+        prep = self._make_card(left)
+        prep.pack(fill="x")
+        self._card_header(prep, "🧪 บูสต์หน้าเตรียมตัว — ติ๊กก่อนกด Play",
+                          "ใช้กับโหมดเหรียญ/กล่อง (โหมด EXP ติ๊กเฉพาะ Star x2 เสมอ)\n"
+                          "บอทปรับให้ตรงเป๊ะ: ตัวที่ไม่เลือกแต่ติ๊กค้างในเกม จะกดเอาออกให้")
+        prep_selected = {str(n) for n in (config.PREP_BOOST_TARGETS or [])}
+        self._prep_vars = {}
+        hints = {"Stopwatch": " (ไม่มีสต็อก = 800 เหรียญ/ด่าน)"}
+        for it in config.BOOST_ITEMS:
+            name = str(it["name"])
+            var = tk.BooleanVar(value=name in prep_selected)
+            self._prep_vars[name] = var
+            self._make_check(prep, name + hints.get(name, ""), var,
+                             command=self._save_boosts).pack(fill="x", padx=10, pady=1)
+        tk.Frame(prep, bg=C_CARD, height=8).pack()
+
+        # การ์ด: Fast Start (คุมทั้งการซื้อ + การกดปุ่ม activate ตอนเริ่มวิ่ง)
+        act = self._make_card(left)
+        act.pack(fill="x", pady=(8, 0))
+        self._card_header(act, "⚡ Fast Start (โหมดกล่อง/EXP)",
+                          "ติ๊ก = โหมดกล่องซื้อก่อนเล่น + กดปุ่ม activate ตอนเริ่มด่าน\n"
+                          "ไม่ติ๊ก = ไม่ซื้อและไม่กดเลย (ไม่เปลืองของทุกด่าน)")
+        self._act_var = tk.BooleanVar(value=bool(config.TAP_FAST_START_ACTIVATE))
+        self._make_check(act, "ใช้ Fast Start (ซื้อ + กดปุ่ม activate)",
+                         self._act_var, command=self._save_boosts
+                         ).pack(fill="x", padx=10, pady=(0, 1))
+        tk.Frame(act, bg=C_CARD, height=8).pack()
+
+        # การ์ด: บูสต์กล่องสุ่ม (Multi-Buy)
+        box = self._make_card(right)
+        box.pack(fill="both", expand=True)
+        self._card_header(box, "🎲 กล่องสุ่ม — Multi-Buy ก่อนเล่น (โหมดกล่อง)",
+                          "บอทปรับติ๊กหน้า \"Pick desired Boosts!\" ให้ตรงตามนี้เป๊ะ (ติ๊กเกินเอาออกให้)\n"
+                          "แล้วกด Multi-Buy จนได้ (ซื้อแรก 1,200 / ซื้อซ้ำ 600 เหรียญ) — ไม่ติ๊กเลย = ไม่ซื้อ")
+        grid = tk.Frame(box, bg=C_CARD)
+        grid.pack(fill="x", padx=8, pady=(2, 8))
+        grid.columnconfigure(0, weight=1, uniform="g")
+        grid.columnconfigure(1, weight=1, uniform="g")
+        box_selected = {str(n) for n in (config.BOX_MULTI_TARGETS or [])}
+        self._box_vars = {}
+        # เรียง 2 คอลัมน์ตามผังจริงในเกม (ซ้าย 6 / ขวา 5)
+        for i, opt in enumerate(config.MULTI_BOOST_OPTIONS):
+            name = str(opt["name"])
+            var = tk.BooleanVar(value=name in box_selected)
+            self._box_vars[name] = var
+            self._make_check(grid, name, var, command=self._save_boosts
+                             ).grid(row=i % 6, column=i // 6, sticky="ew", padx=4, pady=1)
+
+    # ============================================================
+    # แท็บ 3: ระบบ (ADB + ขนาด UI)
+    # ============================================================
+    def _build_tab_system(self, parent):
+        F = self._F
+        cols = tk.Frame(parent, bg=C_BG)
+        cols.pack(fill="both", expand=True)
+        cols.columnconfigure(0, weight=1, uniform="s")
+        cols.columnconfigure(1, weight=1, uniform="s")
+
+        # การ์ด: การเชื่อมต่อ ADB
+        conn = self._make_card(cols)
+        conn.grid(row=0, column=0, sticky="new", padx=(0, 8))
+        self._card_header(conn, "🔌 การเชื่อมต่อ (ADB / LDPlayer)")
+        tk.Label(conn, text="ADB Path", bg=C_CARD, fg=C_DIM,
+                 font=("Segoe UI", F(8))).pack(anchor="w", padx=12, pady=(4, 0))
+        adb_border, self.adb_entry = self._make_entry(conn, self.adb_var, width=30)
+        adb_border.pack(fill="x", padx=12, pady=(2, 6))
+        tk.Label(conn, text="Device", bg=C_CARD, fg=C_DIM,
+                 font=("Segoe UI", F(8))).pack(anchor="w", padx=12)
+        dev_border, self.dev_entry = self._make_entry(conn, self.dev_var, width=18)
+        dev_border.pack(fill="x", padx=12, pady=(2, 8))
+
+        btn_row = tk.Frame(conn, bg=C_CARD)
+        btn_row.pack(fill="x", padx=12)
+        btn_row.columnconfigure(0, weight=1)
+        btn_row.columnconfigure(1, weight=1)
+        self.auto_find_btn = self._make_btn(btn_row, "หาอัตโนมัติ", self.auto_find_adb, pady=4)
+        self.auto_find_btn.grid(row=0, column=0, sticky="ew", padx=(0, 3))
+        self.test_btn = self._make_btn(btn_row, "ทดสอบ", self.test_connection, pady=4)
+        self.test_btn.grid(row=0, column=1, sticky="ew", padx=(3, 0))
+        # ปุ่มกู้: รีสตาร์ต adb server → ถ้ายัง offline สั่งรีบูต LDPlayer ผ่าน ldconsole
+        self.recover_btn = self._make_btn(conn, "🔌 กู้การเชื่อมต่อ (device offline)",
+                                          self.recover_connection,
+                                          bg="#7c3aed", hover_bg="#6d28d9", pady=4)
+        self.recover_btn.pack(fill="x", padx=12, pady=(6, 10))
+
+        # การ์ด: หน้าตา + ข้อมูลไฟล์
+        right = tk.Frame(cols, bg=C_BG)
+        right.grid(row=0, column=1, sticky="new")
+
+        ui = self._make_card(right)
+        ui.pack(fill="x")
+        self._card_header(ui, "🖥 ขนาดหน้าต่าง (UI)")
+        self.scale_selector = PillSelector(ui, self.scale_var, [
+            ("90%", "0.9"), ("100%", "1.0"), ("115%", "1.15"), ("130%", "1.3"),
+        ], command=self._apply_scale, font=("Segoe UI", F(8), "bold"))
+        self.scale_selector.frame.pack(fill="x", padx=12, pady=(4, 10))
+
+        info = self._make_card(right)
+        info.pack(fill="x", pady=(8, 0))
+        self._card_header(info, "ℹ️ ไฟล์ / การตั้งค่าละเอียด")
+        tk.Label(info, justify="left", bg=C_CARD, fg=C_DIM, font=("Segoe UI", F(8)),
+                 text=("• การตั้งค่าทั้งหมดเก็บใน settings.json (ข้างโปรแกรม)\n"
+                       "• พิกัดปุ่ม/ความไว/ดีเลย์ จูนละเอียดได้ในไฟล์เดียวกัน\n"
+                       "• ผลเหรียญรายรอบเก็บที่ coin_logs/coins.csv\n"
+                       "• พิกัดจูนมาสำหรับ LDPlayer 1280x720 (DPI 240)")
+                 ).pack(anchor="w", padx=12, pady=(2, 10))
+
+    # ============================================================
+    # ตั้งค่าบูสต์: บันทึกอัตโนมัติ + สรุป + พรีเซ็ต
+    # ============================================================
+    def _refresh_boost_summary(self):
+        """สรุปบูสต์บนแถบควบคุม — คลิกแล้วเด้งไปแท็บตั้งค่าบูสต์"""
+        p = len(config.PREP_BOOST_TARGETS or [])
+        n = len(config.BOX_MULTI_TARGETS or [])
+        box = f"กล่องสุ่ม {n}" if n else "ไม่ซื้อกล่อง"
+        fs = "กด FS" if config.TAP_FAST_START_ACTIVATE else "ไม่กด FS"
+        self.boost_summary_var.set(
+            f"🎁 ติ๊ก {p}/{len(config.BOOST_ITEMS)} • {box} • {fs} ▸")
+
+    def _save_boosts(self):
+        """เซฟค่าบูสต์ทั้งหมดลง settings.json ทันทีที่ติ๊ก (auto-save)
+        — บอทอ่านค่าใหม่ตอนเริ่มด่านถัดไป ไม่ต้องรีสตาร์ต"""
+        prep = [n for n, v in self._prep_vars.items() if v.get()]
+        box = [n for n, v in self._box_vars.items() if v.get()]
+        ok = config.save_settings({"PREP_BOOST_TARGETS": prep,
+                                   "BOX_MULTI_TARGETS": box,
+                                   "TAP_FAST_START_ACTIVATE": bool(self._act_var.get())})
+        if ok:
+            note = " • มีผลด่านถัดไป" if self.running else ""
+            self.boost_saved_var.set(f"✓ บันทึกแล้ว {time.strftime('%H:%M:%S')}{note}")
+        else:
+            self.boost_saved_var.set("❌ เขียน settings.json ไม่สำเร็จ")
+            self._enqueue("[app] ❌ เขียน settings.json ไม่สำเร็จ — ค่าบูสต์ยังไม่ถูกบันทึก")
+        self._refresh_boost_summary()
+
+    def _presets_dict(self):
+        d = config.BOOST_PRESETS
+        return dict(d) if isinstance(d, dict) else {}
+
+    def _refresh_preset_combo(self):
+        try:
+            self.preset_combo["values"] = sorted(self._presets_dict())
+        except tk.TclError:
+            pass
+
+    def _load_preset(self, *_):
+        """เลือกพรีเซ็ตจากรายการ → ติ๊กเด้งตาม + ใช้งานทันที (auto-save ต่อเลย)"""
+        name = self.preset_var.get().strip()
+        p = self._presets_dict().get(name)
+        if not isinstance(p, dict):
+            return
+        prep = {str(x) for x in (p.get("PREP_BOOST_TARGETS") or [])}
+        box = {str(x) for x in (p.get("BOX_MULTI_TARGETS") or [])}
+        for n, v in self._prep_vars.items():
+            v.set(n in prep)
+        for n, v in self._box_vars.items():
+            v.set(n in box)
+        if "TAP_FAST_START_ACTIVATE" in p:   # พรีเซ็ตเก่าไม่มี key นี้ → คงค่าเดิมไว้
+            self._act_var.set(bool(p["TAP_FAST_START_ACTIVATE"]))
+        self._save_boosts()
+        self._enqueue(f"[app] ใช้พรีเซ็ต '{name}' แล้ว")
+
+    def _save_preset(self):
+        name = self.preset_var.get().strip()
+        if not name:
+            self._enqueue("[app] พิมพ์ชื่อพรีเซ็ตในช่องก่อน แล้วค่อยกด 💾")
+            return
+        d = self._presets_dict()
+        d[name] = {"PREP_BOOST_TARGETS": [n for n, v in self._prep_vars.items() if v.get()],
+                   "BOX_MULTI_TARGETS": [n for n, v in self._box_vars.items() if v.get()],
+                   "TAP_FAST_START_ACTIVATE": bool(self._act_var.get())}
+        if config.save_settings({"BOOST_PRESETS": d}):
+            self._refresh_preset_combo()
+            self._enqueue(f"[app] เซฟพรีเซ็ต '{name}' แล้ว ({len(d)} พรีเซ็ตทั้งหมด)")
+        else:
+            self._enqueue("[app] ❌ เขียน settings.json ไม่สำเร็จ — พรีเซ็ตยังไม่ถูกเซฟ")
+
+    def _delete_preset(self):
+        name = self.preset_var.get().strip()
+        d = self._presets_dict()
+        if name not in d:
+            self._enqueue(f"[app] ไม่มีพรีเซ็ตชื่อ '{name}' ให้ลบ")
+            return
+        d.pop(name)
+        if config.save_settings({"BOOST_PRESETS": d}):
+            self.preset_var.set("")
+            self._refresh_preset_combo()
+            self._enqueue(f"[app] ลบพรีเซ็ต '{name}' แล้ว")
+        else:
+            self._enqueue("[app] ❌ เขียน settings.json ไม่สำเร็จ — ยังไม่ถูกลบ")
 
     # ============================================================
     # ตัวช่วย UI / สถิติสด
@@ -712,7 +1051,7 @@ class App:
 
     def _update_toggle_btn(self, state_type):
         spec = {
-            "stopped":  ("▶  เริ่มทำงานบอท",  "#10b981", "#059669", "normal"),
+            "stopped":  ("▶  เริ่มทำงานบอท",  C_EMERALD, C_EMER_HV, "normal"),
             "running":  ("■  หยุดทำงานบอท",   "#ef4444", "#dc2626", "normal"),
             "stopping": ("●  กำลังหยุดบอท...", "#f59e0b", "#d97706", "disabled"),
         }
@@ -781,7 +1120,7 @@ class App:
         def worker():
             try:
                 if not self.adb.connected():
-                    self._enqueue("[app] ❌ เชื่อมต่อ ADB ไม่ได้ — หยุด (ลองปุ่ม 🔌 กู้การเชื่อมต่อ)")
+                    self._enqueue("[app] ❌ เชื่อมต่อ ADB ไม่ได้ — หยุด (ลองปุ่ม 🔌 กู้การเชื่อมต่อ ในแท็บ ⚙️ ระบบ)")
                     self._safe_after(lambda: self._set_adb_dot("bad"))
                     return
                 self._safe_after(lambda: self._set_adb_dot("ok"))
@@ -802,7 +1141,8 @@ class App:
         self.stop_event.set()
         self._set_status("stopping")
         self._update_toggle_btn("stopping")
-        self._enqueue("[app] กำลังหยุด (รอจบ state ปัจจุบัน)...")
+        self._enqueue("[app] สั่งหยุดแล้ว — บอทจะหยุดทันที "
+                      "(อย่างช้าไม่เกินคำสั่ง ADB ที่ค้างท่ออยู่ ~1-2 วิ)")
 
     def _on_bot_stopped(self):
         self.running = False

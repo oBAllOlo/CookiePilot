@@ -137,6 +137,39 @@ def find_in_roi(screen, template_path, roi, threshold=config.MATCH_THRESHOLD):
     return (max_val >= threshold, max_val)
 
 
+def find_all(screen, template_path, threshold=config.MATCH_THRESHOLD, region=None, limit=16):
+    """
+    หา template "ทุกจุด" ที่ score >= threshold (ตัดจุดซ้ำที่ทับกันออกให้)
+    region=(x1,y1,x2,y2) จำกัดพื้นที่ค้น — พิกัดที่คืนเป็นพิกัดจอเต็มเสมอ
+    คืน list ของ (cx, cy, score) เรียงจาก score มาก → น้อย
+    """
+    if screen is None:
+        return []
+    x0 = y0 = 0
+    sub = screen
+    if region:
+        x1, y1, x2, y2 = region
+        sub = screen[y1:y2, x1:x2]
+        x0, y0 = x1, y1
+    tpl = load_template(template_path)
+    th, tw = tpl.shape[:2]
+    if sub.shape[0] < th or sub.shape[1] < tw:
+        return []
+    res = cv2.matchTemplate(sub, tpl, cv2.TM_CCOEFF_NORMED)
+    hits = []
+    for _ in range(limit):
+        _, mx, _, loc = cv2.minMaxLoc(res)
+        if mx < threshold:
+            break
+        x, y = loc
+        hits.append((x0 + x + tw // 2, y0 + y + th // 2, float(mx)))
+        # กดค่าบริเวณรอบ match ให้ต่ำสุด กันเจอจุดเดิม/จุดเหลื่อมซ้ำ
+        yc1, yc2 = max(0, y - th // 2), min(res.shape[0], y + th // 2 + 1)
+        xc1, xc2 = max(0, x - tw // 2), min(res.shape[1], x + tw // 2 + 1)
+        res[yc1:yc2, xc1:xc2] = -1.0
+    return hits
+
+
 def frame_signature(screen):
     """ย่อเฟรมเป็น grayscale 64x36 (float32) ไว้เทียบว่าจอเปลี่ยนไหม (ตรวจค้าง/ป๊อปอัป)"""
     small = cv2.resize(screen, (64, 36))
