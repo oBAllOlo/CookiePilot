@@ -124,7 +124,13 @@ class App:
         self.v2_state_var     = tk.StringVar(value="—")
         self.fatigue_var      = tk.StringVar(value="ความล้า -")
         saved_mode = str(config.BOT_MODE or "coin").strip().lower()
-        self.mode_var  = tk.StringVar(value=saved_mode if saved_mode in ("coin", "box") else "coin")
+        self.mode_var  = tk.StringVar(value=saved_mode if saved_mode in ("coin", "box", "exp") else "coin")
+        # ป้ายสถิติที่คำว่า "เหรียญ/EXP" เปลี่ยนตามโหมดที่เลือก (exp อ่านแถว XP หน้า Result)
+        self.unit_total_var  = tk.StringVar()
+        self.unit_rate_var   = tk.StringVar()
+        self.unit_recent_var = tk.StringVar()
+        self.unit_graph_var  = tk.StringVar()
+        self._apply_mode_labels()
         self.adb_var   = tk.StringVar(value=self.adb.path)
         self.dev_var   = tk.StringVar(value=self.adb.device)
         self.loops_var = tk.StringVar(value="0")
@@ -209,13 +215,16 @@ class App:
                      font=("Segoe UI", F(9), "bold")).pack(anchor="w", padx=12, pady=pady)
 
         def make_stat(parent, col, caption, var, value_fg, framed):
-            """ช่องสถิติ 1 ช่อง — framed=True มีกรอบ (chip หลัก) / False ไม่มีกรอบ (สถิติย่อย)"""
+            """ช่องสถิติ 1 ช่อง — framed=True มีกรอบ (chip หลัก) / False ไม่มีกรอบ (สถิติย่อย)
+            caption เป็น str หรือ StringVar ก็ได้ (ป้ายเหรียญ/EXP เปลี่ยนตามโหมด)"""
             bg = C_CARD_IN if framed else C_CARD
             box = tk.Frame(parent, bg=bg, highlightthickness=1 if framed else 0,
                            highlightbackground=C_LINE)
             box.grid(row=0, column=col, sticky="nsew", padx=4)
-            tk.Label(box, text=caption, font=("Segoe UI", F(8), "bold"),
-                     bg=bg, fg=C_MUTED).pack(pady=(7, 0) if framed else 0)
+            cap_kw = ({"textvariable": caption} if isinstance(caption, tk.StringVar)
+                      else {"text": caption})
+            tk.Label(box, font=("Segoe UI", F(8), "bold"),
+                     bg=bg, fg=C_MUTED, **cap_kw).pack(pady=(7, 0) if framed else 0)
             tk.Label(box, textvariable=var, font=("Segoe UI", F(13) if framed else F(12), "bold"),
                      bg=bg, fg=value_fg).pack(pady=(1, 8) if framed else (2, 0))
 
@@ -257,7 +266,8 @@ class App:
         self.mode_selector = PillSelector(left, self.mode_var, [
             ("🪙 เหรียญ", "coin"),
             ("📦 กล่อง", "box"),
-        ], font=("Segoe UI", F(9), "bold"))
+            ("⭐ EXP", "exp"),
+        ], command=self._apply_mode_labels, font=("Segoe UI", F(9), "bold"))
         self.mode_selector.frame.pack(fill="x", padx=12)
 
         side_label(left, "จำนวนรอบ (0 = ไม่จำกัด)")
@@ -313,7 +323,7 @@ class App:
         hero.pack(fill="x")
         hero_top = tk.Frame(hero, bg=C_CARD)
         hero_top.pack(fill="x", padx=12, pady=(10, 0))
-        tk.Label(hero_top, text="🪙 เหรียญสะสมรวม", font=("Segoe UI", F(9), "bold"),
+        tk.Label(hero_top, textvariable=self.unit_total_var, font=("Segoe UI", F(9), "bold"),
                  bg=C_CARD, fg=C_MUTED).pack(side="left")
         tk.Label(hero, textvariable=self.total_coins_var,
                  font=("Segoe UI", F(30), "bold"), bg=C_CARD, fg=C_GOLD).pack(anchor="w", padx=12)
@@ -324,13 +334,13 @@ class App:
             chips.columnconfigure(i, weight=1)
         make_stat(chips, 0, "⏱ เวลารัน", self.uptime_var, "#e2e8f0", framed=True)
         make_stat(chips, 1, "🔁 รอบที่เล่น", self.loops_done_var, C_GOLD, framed=True)
-        make_stat(chips, 2, "⚡ เหรียญ/ชม.", self.rate_var, C_GREEN, framed=True)
+        make_stat(chips, 2, self.unit_rate_var, self.rate_var, C_GREEN, framed=True)
 
         mini = tk.Frame(hero, bg=C_CARD)
         mini.pack(fill="x", padx=8, pady=(0, 10))
         for i in range(3):
             mini.columnconfigure(i, weight=1)
-        make_stat(mini, 0, "เหรียญรอบล่าสุด", self.recent_coins_var, C_GREEN, framed=False)
+        make_stat(mini, 0, self.unit_recent_var, self.recent_coins_var, C_GREEN, framed=False)
         make_stat(mini, 1, "เฉลี่ย/รอบ", self.avg_var, "#e2e8f0", framed=False)
         make_stat(mini, 2, "สูงสุด/รอบ", self.best_var, C_GOLD, framed=False)
 
@@ -345,7 +355,7 @@ class App:
         tk.Label(v2_row, textvariable=self.fatigue_var, font=("Segoe UI", F(9)),
                  bg=C_CARD, fg=C_DIM).pack(side="right")
 
-        tk.Label(v2, text="เหรียญ 20 รอบล่าสุด", font=("Segoe UI", F(8), "bold"),
+        tk.Label(v2, textvariable=self.unit_graph_var, font=("Segoe UI", F(8), "bold"),
                  bg=C_CARD, fg=C_DIM).pack(anchor="w", padx=12)
         self.graph = tk.Canvas(v2, height=int(64 * s), bg=C_CARD_IN, bd=0,
                                highlightthickness=1, highlightbackground=C_LINE)
@@ -380,6 +390,16 @@ class App:
     # ============================================================
     # ตัวช่วย UI / สถิติสด
     # ============================================================
+    def _apply_mode_labels(self):
+        """เปลี่ยนคำว่า เหรียญ/EXP บนป้ายสถิติตามโหมดที่เลือก
+        (โหมด exp บอทอ่านตัวเลขแถว XP บนหน้า Result แทนแถว Coins)"""
+        exp = self.mode_var.get() == "exp"
+        icon, unit = ("⭐", "EXP") if exp else ("🪙", "เหรียญ")
+        self.unit_total_var.set(f"{icon} {unit}สะสมรวม")
+        self.unit_rate_var.set(f"⚡ {unit}/ชม.")
+        self.unit_recent_var.set(f"{unit}รอบล่าสุด")
+        self.unit_graph_var.set(f"{unit} 20 รอบล่าสุด")
+
     def _set_status(self, state):
         """อัปเดตป้ายสถานะบนแถบหัว (ข้อความ + สี ตัวอักษร/พื้นหลัง)"""
         cfg = {
@@ -751,7 +771,8 @@ class App:
         else:
             self.loops_done_var.set("0")
 
-        mode_txt = "วิ่งเก็บกล่อง (Fast Start)" if mode == "box" else "รีโรลเหรียญ"
+        mode_txt = {"box": "วิ่งเก็บกล่อง (Fast Start)",
+                    "exp": "เก็บ EXP (Star x2)"}.get(mode, "รีโรลเหรียญ")
         if max_loops:
             self._enqueue(f"\n[app] ===== เริ่มบอท โหมด{mode_txt} (จะเล่น {max_loops} รอบแล้วหยุด) =====")
         else:

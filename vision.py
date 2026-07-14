@@ -199,15 +199,17 @@ class CoinReader:
         boxes = [b for b in boxes if b[3] - b[1] >= 0.55 * maxh]
         return th, sorted(boxes, key=lambda b: b[0])
 
-    def read(self, screen):
-        """อ่านเลขเหรียญจาก screen → int (หรือ None ถ้าอ่านไม่ได้)"""
+    def read(self, screen, roi=None):
+        """อ่านเลขจาก screen → int (หรือ None ถ้าอ่านไม่ได้)
+        roi = กรอบตัวเลข (x1,y1,x2,y2) — ไม่ส่ง = ใช้ COIN_ROI (แถว Coins)
+        โหมด exp ส่ง XP_ROI มาอ่านแถว XP แทน (ฟอนต์เดียวกัน template เลขชุดเดิมใช้ได้)"""
         if screen is None:
             return None
         try:
             digits = self._load_digits()
             if len(digits) < 10:
                 return None
-            x1, y1, x2, y2 = config.COIN_ROI
+            x1, y1, x2, y2 = roi or config.COIN_ROI
             th, boxes = self._segment_digits(screen[y1:y2, x1:x2])
             if not boxes:
                 return None
