@@ -85,10 +85,15 @@ class PillSelector:
                 bind_hover(btn, C_CARD, C_LINE, C_MUTED, C_TEXT)
 
     def set_state(self, state):
-        for btn in self.buttons.values():
+        for val, btn in self.buttons.items():
             btn.config(state=state)
             if state == "disabled":
-                btn.config(bg=C_CARD, fg="#475569")
+                if val == self.variable.get():
+                    # ล็อกอยู่ก็ต้องยังเห็นว่า "เลือกค่าไหนอยู่" (น้ำเงินหม่น ตัวอักษรสว่าง)
+                    # — เดิมเทาหมดทุกปุ่ม ผู้ใช้ดูไม่ออกว่าบอทกำลังรันโหมดไหน
+                    btn.config(bg="#1e40af", disabledforeground="#e2e8f0")
+                else:
+                    btn.config(bg=C_CARD, disabledforeground="#475569")
         if state == "normal":
             self.update_ui()
 
@@ -739,11 +744,15 @@ class App:
         self.unit_recent_var.set(f"{unit}รอบล่าสุด")
         self.unit_graph_var.set(f"{unit} 20 รอบล่าสุด")
 
+    def _mode_txt(self):
+        return {"coin": "🪙 เหรียญ", "box": "📦 กล่อง", "exp": "⭐ EXP"}.get(
+            self.mode_var.get(), self.mode_var.get())
+
     def _set_status(self, state):
-        """อัปเดตป้ายสถานะบนแถบหัว (ข้อความ + สี ตัวอักษร/พื้นหลัง)"""
+        """อัปเดตป้ายสถานะบนแถบหัว (ข้อความ + สี ตัวอักษร/พื้นหลัง) — ตอนรันบอกโหมดด้วย"""
         cfg = {
             "stopped":  ("● หยุดอยู่",     C_RED,   "#3f1d1d"),
-            "running":  ("● กำลังทำงาน",   C_GREEN, "#123524"),
+            "running":  (f"● กำลังทำงาน • {self._mode_txt()}", C_GREEN, "#123524"),
             "stopping": ("● กำลังหยุด...",  C_GOLD,  "#3a2e0a"),
         }
         text, fg, bg = cfg[state]
@@ -844,7 +853,7 @@ class App:
                 self.v2_state_var.set(f"😴 พักระหว่างเกม — เหลือ {remain} วิ")
                 self.v2_state_lbl.config(fg=C_GOLD)
             else:
-                self.v2_state_var.set("🎮 กำลังเล่น")
+                self.v2_state_var.set(f"🎮 กำลังเล่น — โหมด{self._mode_txt()}")
                 self.v2_state_lbl.config(fg=C_GREEN)
         self.root.after(1000, self._tick_uptime)
 
