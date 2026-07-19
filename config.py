@@ -371,6 +371,115 @@ APP_VERSION = "3.0"
 UI_SCALE = 1.0    # ขนาด UI (0.9 / 1.0 / 1.15 / 1.3) — ปรับได้จากในแอป จำค่าลง settings.json
 
 # ============================================================
+# 🧩 กิจกรรมเสริม (activities.py) — ทำงานแยกจากบอทฟาร์มหลัก กดจากแท็บ "กิจกรรม"
+#   ส่งหัวใจ / รับหัวใจเมล / เพิ่มเพื่อน / กาชาสมบัติ / ย่อยผง / อัพเกรด +9 / กล่องของขวัญ
+#   template ชุดนี้ (templates/ 38 ไฟล์) นำเข้าจากบอทอ้างอิง — สเกลอาจไม่ตรงจอเรา 100%
+#   → ใช้ multi-scale ช่วงกว้าง (ACT_SCALES) + ถ้า log ฟ้อง score ต่ำ ให้แคปทับจากจอจริง
+# ============================================================
+ACT_MATCH_THRESHOLD = 0.80    # หลวมกว่า MATCH_THRESHOLD เพราะ template มาจากจอคนอื่น
+ACT_SCALES = (1.0, 0.95, 1.05)   # ตัดจาก 9 สเกลเหลือ 3 → สแกนเร็วขึ้น ~3 เท่า (template สำคัญ
+                                  #   ครอปใหม่ที่ scale 1.0 แล้ว score ขึ้น 1.00 = แมตช์ที่ 1.0 เป๊ะ)
+                                  #   ถ้ากิจกรรมไหนหาปุ่มไม่เจอ ค่อยเพิ่มสเกลกลับใน settings.json
+ACT_POLL = 0.25               # จังหวะสแกนจอในลูปกิจกรรม (วิ) — ต่ำ = ตอบสนองไว (ปรับใน settings.json)
+ACT_MENU_DELAY = 0.3          # หน่วงจังหวะเมนูคงที่ทุกกิจกรรม (วิ) — _msleep ใช้ค่านี้ ต่ำ = ไว
+                              #   (อย่าต่ำกว่า ~0.2 ไม่งั้นกดก่อน UI/อนิเมชันพร้อม ปรับใน settings.json)
+ACT_IDLE_LIMIT = 12           # สแกนไม่เจอปุ่มอะไรเลยติดกันกี่รอบ → เลิก (กันวนมั่วเงียบ ๆ)
+ACT_BTN_CENTER = (640, 360)   # จุดแตะกลางจอ (ปิดฉากรางวัล/เร่งอนิเมชัน)
+ACT_BTN_CHEST  = (490, 350)   # จุดแตะ "หีบ" ในฉากเปิดกาชา — สแปมแตะข้ามฉากหีบปิดค้าง ~3.5 วิ
+                              #   (ยืนยันจากจอจริง 2026-07-19: แตะซ้ำ หีบเปิดทันที Confirm รางวัล
+                              #    โผล่ ~2 วิ แทน ~5.4 วิ; จุดกลาง (640,360) ไม่โดนหีบ หีบเยื้องซ้าย)
+ACT_GACHA_CHEST_TAPS = 5      # จำนวนครั้งที่สแปมแตะหีบตอนซื้อกาชา (ปรับใน settings.json ได้)
+ACT_BTN_MAIL_CLOSE = (1238, 45)   # ปิดหน้าต่างจดหมาย/ร้าน (มุมขวาบน) — fallback เมื่อไม่มี template
+
+# — ป๊อปอัปร่วม (โผล่ได้ทุกกิจกรรม)
+IMG_ACT_OKAY          = "templates/okay.png"           # ปุ่ม Okay ปิดป๊อปอัปทั่วไป
+IMG_ACT_CONFIRM       = "templates/confirm.png"        # ปุ่มยืนยัน (ฟ้า)
+IMG_ACT_CONFIRM_GREEN = "templates/confirm_green.png"  # ปุ่มยืนยัน (เขียว)
+
+# — 💗 ส่งหัวใจ (ต้องเปิดหน้ารายชื่อเพื่อนค้างไว้ก่อนกดเริ่ม)
+IMG_ACT_SEND_HEART = "templates/send_heart.png"
+ACT_HEART_BAND   = (512, 0, 832, 720)     # โซนค้นปุ่มส่งใจ (คอลัมน์ 40–65% ของจอ)
+ACT_HEART_Y_GAP  = 30                     # ปุ่มต้องห่างแนว y จากที่กดไปแล้วเกินนี้ (px) กันกดแถวซ้ำ
+ACT_HEART_SCROLL = (640, 446, 640, 302)   # swipe เลื่อนรายชื่อลง (y 62% → 42%)
+ACT_LIST_STABLE_DIFF  = 3.0               # เฟรมต่างเฉลี่ยน้อยกว่านี้ = จอไม่เลื่อนแล้ว
+ACT_LIST_STABLE_COUNT = 2                 # ต้องนิ่งติดกันกี่ครั้ง = ถึงล่างสุดของรายชื่อ
+
+# — 📬 รับหัวใจจากเมล (เริ่มจากหน้าล็อบบี้ที่เห็นไอคอนจดหมาย)
+IMG_ACT_MAIL            = "templates/mail.png"
+IMG_ACT_RECEIVE_HEART   = "templates/receive_send_heart.png"  # ปุ่ม "รับ+ส่งทั้งหมด"
+IMG_ACT_ALL_LIVES_DONE  = "templates/all_lives_done.png"      # รับ/ส่งครบทุกใบแล้ว
+IMG_ACT_NO_LIVES        = "templates/no_lives_received.png"   # ไม่มีหัวใจให้รับแล้ว
+IMG_ACT_CLOSE_LIFE_SHOP = "templates/close_life_shop.png"     # ปิดหน้าต่าง (ไม่มีไฟล์ → ใช้ ACT_BTN_MAIL_CLOSE)
+IMG_ACT_MAIL_CONFIRM    = "templates/mail_confirm.png"        # ปุ่ม Confirm ในไดอะล็อก "Send X a free Life?"
+                                                                # (กดครั้งเดียวไล่วนไปทีละคนเอง — ยืนยันจากจอจริง 2026-07-18)
+ACT_MAIL_CONFIRM_WAIT = 15    # รอหน้ายืนยันใบแรกกี่รอบ (รอบละ ~1 วิ) ไม่มา → ยกเลิก
+ACT_MAIL_MISS_LIMIT   = 8     # หา confirm ไม่เจอติดกันกี่รอบ = จบแล้ว
+
+# — 👥 เพิ่มเพื่อน
+IMG_ACT_FRIENDS_BTN    = "templates/friends_button.png"   # เปิดพาเนลเพื่อน (มีอยู่แล้วข้ามได้)
+IMG_ACT_FIND_FRIEND    = "templates/find_friend.png"      # แท็บแนะนำเพื่อน
+IMG_ACT_ADD_FRIEND     = "templates/add_friend.png"       # ปุ่มเพิ่มเพื่อน (จำเป็น)
+IMG_ACT_REFRESH_FRIEND = "templates/refresh_friend.png"   # ปุ่มรีเฟรชสลับรายชื่อ
+ACT_FRIEND_NO_PROGRESS = 3    # ไม่เจอทั้ง add/refresh ติดกันกี่รอบ → เลิก
+# ปุ่ม "Request" ไม่เปลี่ยนสถานะแม้ขอไม่สำเร็จ (เช่นป๊อปอัป "friend list is full"
+# ที่เด้งแล้วหายเองใน ~2 วิ) — ต้องจำแนว y ที่กดไปแล้วกันกดคนเดิมซ้ำไม่รู้จบ (ยืนยันจากจอจริง)
+ACT_FRIEND_BAND = (0, 180, 1280, 720)   # โซนค้นหาปุ่ม (ใต้แถบแท็บ Friends/Find/Request)
+ACT_FRIEND_Y_GAP = 40                    # ต้องห่างแนว y จากที่กดไปแล้วเกินนี้ (px) ถึงนับเป็นคนใหม่
+
+# — 🔮 กาชาสมบัติ (เริ่มจากหน้าร้านสมบัติ/ล็อบบี้ — เอนจินไล่กดปุ่มเท่าที่เห็น)
+IMG_ACT_TREASURE      = "templates/button_treasure.png"      # เข้าโหมดสมบัติ
+IMG_ACT_GACHA_5000    = "templates/button_gacha_5000.png"    # กล่องราคา 5000
+IMG_ACT_GACHA_DRAW    = "templates/button_gacha_draw.png"    # เปิดสุ่ม
+IMG_ACT_GACHA_CONFIRM = "templates/button_gacha_confirm.png" # ยืนยันซื้อ (นับ 1 กล่องที่นี่)
+IMG_ACT_GACHA_CHEST   = "templates/button_gacha_chest.png"   # เปิดหีบ
+IMG_ACT_CABINET       = "templates/button_cabinet.png"       # เข้าตู้เก็บ (ตอนคลังเต็ม)
+IMG_ACT_NO_SPACE      = "templates/popup_no_space.png"       # ป๊อปอัปคลังเต็ม → ไปย่อยผงก่อน
+
+# — ♻️ ย่อยผง (เปิดหน้าตู้เก็บสมบัติก่อน ถ้ากดเดี่ยว ๆ)
+IMG_ACT_EXTRACT         = "templates/extract.png"          # เข้าโหมดเลือกชิ้นย่อย (หน้า "Treasures"
+                                                            # เข้าทางปุ่ม "Cabinet" มุมซ้ายบน — ไม่ใช่
+                                                            # ปุ่ม Extract ในแท็บ "Ingredients" คนละฟีเจอร์)
+IMG_ACT_CONFIRM_EXTRACT = "templates/confirm_extract.png"  # ปุ่ม Extract (เขียวใหญ่) หลังเลือกครบ
+                                                            # — กดแล้วเด้งไดอะล็อกเตือนอีกชั้น
+IMG_ACT_EXTRACT_DIALOG  = "templates/extract_dialog_confirm.png"  # ปุ่ม Extract ในไดอะล็อกเตือน
+                                                            # "จะเสียของถาวร" — กดจริงตรงนี้ถึงย่อย
+                                                            # (ยืนยันจากจอจริง 2026-07-18: ทดสอบย่อยสำเร็จจริง)
+IMG_ACT_SORT_TIER       = "templates/button_sort_tier.png" # ปุ่ม "Sort" แถบกระชับ เปิดเมนูเรียง
+IMG_ACT_TIER            = "templates/button_tier.png"      # ฟิลด์ "Tier ▼" (สลับ asc/desc) — เดิมใช้
+                                                            # เรียงตาม Tier ตอนย่อยผง
+IMG_ACT_OBTAINED        = "templates/button_obtained.png"  # ฟิลด์ "Obtained ▼" — ผู้ใช้สั่งให้ย่อย
+                                                            # เรียงตาม "Obtained" (ของที่เพิ่งได้ล่าสุด
+                                                            # มาต้นแถว) แทน Tier
+IMG_ACT_FAVORITE        = "templates/popup_favorite.png"   # เตือนมีของติดดาว → ย่อยไม่ได้
+# กริดช่องของในตู้ — ยืนยันจากจอจริงแล้ว (หน้า "Treasures" กดปุ่ม Extract แถบล่างเข้าโหมด
+# เลือกหลายชิ้น — คนละหน้ากับปุ่ม Extract ในแท็บ Ingredients ที่เป็นคนละฟีเจอร์) 2026-07-18
+ACT_SALVAGE_SLOT1  = (207, 190)           # ช่องซ้ายบนสุด (x, y)
+ACT_SALVAGE_STEP_X = 137                  # ระยะห่างแนวนอนต่อช่อง (px)
+ACT_SALVAGE_COLS   = 4                    # จำนวนช่องต่อแถว
+ACT_SALVAGE_ROW_SWIPE = (640, 480, 640, 330)   # ปัดขึ้นหนึ่งแถวเมื่อเลือกครบแถว — ยังไม่ยืนยัน
+ACT_SALVAGE_BATCH  = 10                    # จำนวนชิ้นที่ย่อยต่อรอบตอนกาชาคลังเต็ม (ปรับใน settings.json ได้)
+                                           #   บอทย่อย max(กล่องที่เพิ่งเปิด, ค่านี้) — floor กันย่อย 0 ชิ้น
+                                           #   ตอนคลังเต็มมาก่อน (batch=0) แล้ววนไม่รู้จบ
+
+# — 💎 อัพเกรด +9 (ใช้ช่องซ้ายบน ACT_SALVAGE_SLOT1 ร่วมกัน)
+IMG_ACT_UPGRADE         = "templates/upgrade.png"           # ปุ่มเข้าโหมดอัพเกรด
+IMG_ACT_SELECT          = "templates/select.png"            # ปุ่มเลือกชิ้น
+IMG_ACT_SELECT_CORRECT  = "templates/select_correct.png"    # ยืนยันชิ้นที่เลือก
+IMG_ACT_REGULAR         = "templates/regular.png"           # ปุ่มตีบวกปกติ (กดวน)
+IMG_ACT_FULLY_UPGRADE   = "templates/fully_upgrade.png"     # ป้าย +9 เต็ม
+IMG_ACT_COIN_ZERO       = "templates/coin_0_upgrade.png"    # เหรียญไม่พอ → หยุดทั้งหมด
+IMG_ACT_CANCEL_UPGRADE  = "templates/cancel_upgrade.png"    # ปิดป๊อปอัประหว่างตี (ไม่ใช่หยุด)
+IMG_ACT_CANCEL_UPGRADE2 = "templates/cancel_upgrade_2.png"  # ปิดหน้าหลัง +9 เต็ม
+
+# — 🎁 เปิดกล่องของขวัญ
+IMG_ACT_PRESENT_BTN     = "templates/present_button.png"   # ไอคอนกล่องของขวัญ
+IMG_ACT_PRESENT_YELLOW  = "templates/present_yellow.png"   # เลือกกล่องเหลือง
+IMG_ACT_DRAW            = "templates/draw.png"             # ปุ่มเปิดครั้งแรก
+IMG_ACT_DRAW_AGAIN      = "templates/draw_again.png"       # ปุ่มเปิดต่อ
+IMG_ACT_EGG_CONGRAT     = "templates/egg_congrat.png"      # ฉากได้ไข่/รางวัลใหญ่
+IMG_ACT_CONFIRM_PRESENT = "templates/confirm_present.png"  # ปุ่มยืนยันรับของ
+
+# ============================================================
 # override ค่าจากไฟล์ settings.json (วางข้าง .exe / ข้างสคริปต์)
 #   - มีไฟล์ → ค่าใน JSON ทับค่า default ด้านบน (เฉพาะชื่อ key ที่มีอยู่จริง)
 #   - ไม่มีไฟล์ → ใช้ค่า default ทั้งหมด (ไม่บังคับต้องสร้าง)

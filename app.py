@@ -22,6 +22,7 @@ from tkinter import scrolledtext, ttk
 import config
 from adb import Adb
 from bot import CookieBot
+from activities import Activities
 
 # ---------- โทนสี (slate dark) — อ้างที่เดียว แก้ธีมง่าย ----------
 C_BG       = "#0f172a"   # พื้นหลังหลัก
@@ -166,6 +167,11 @@ class App:
         self._adb_checking = False
         self.break_until = None       # เวลาสิ้นสุดช่วงพักระหว่างเกม (None = ไม่ได้พัก)
 
+        # กิจกรรมเสริม (แท็บ 🧩) — รันคนละ thread กับบอทหลัก ห้ามรันพร้อมกัน
+        self.act_running = False
+        self.act_thread = None
+        self.act_stop_event = threading.Event()
+
         # log ของ ADB/บอท วิ่งเข้า queue (thread-safe) แล้ว pump ขึ้นจอที่ main thread
         self.adb = Adb(log=self._enqueue)
 
@@ -208,6 +214,10 @@ class App:
         except Exception:
             scale = 1.0
         self.scale_var = tk.StringVar(value=f"{scale:g}")
+        # แท็บกิจกรรมเสริม: ช่องจำนวน + ป้ายสถานะ (อยู่ตรงนี้เพื่อรอด _apply_scale rebuild)
+        self.act_count_var  = tk.StringVar(value="0")
+        self.act_salvage_batch_var = tk.StringVar(value=str(getattr(config, "ACT_SALVAGE_BATCH", 10)))
+        self.act_status_var = tk.StringVar(value="ยังไม่ได้รันกิจกรรม")
 
         self._build_ui()
         self._poll_log()
@@ -379,6 +389,7 @@ class App:
         self.tab_selector = PillSelector(tabs_row, self.tab_var, [
             ("📊 แดชบอร์ด", "dash"),
             ("🎁 ตั้งค่าบูสต์", "boost"),
+            ("🧩 กิจกรรม", "act"),
             ("⚙️ ระบบ", "sys"),
         ], command=self._on_tab_changed, font=("Segoe UI", F(10), "bold"))
         self.tab_selector.frame.pack(fill="x")
@@ -391,6 +402,7 @@ class App:
         self.tab_frames = {}
         for key, builder in (("dash", self._build_tab_dashboard),
                              ("boost", self._build_tab_boosts),
+                             ("act", self._build_tab_activities),
                              ("sys", self._build_tab_system)):
             f = tk.Frame(cont, bg=C_BG)
             f.grid(row=0, column=0, sticky="nsew")
@@ -648,6 +660,81 @@ class App:
                  ).pack(anchor="w", padx=12, pady=(2, 10))
 
     # ============================================================
+    # แท็บ 4: กิจกรรมเสริม (ส่งหัวใจ / เมล / เพื่อน / สมบัติ / กล่องของขวัญ)
+    # ============================================================
+    def _build_tab_activities(self, parent):
+        F = self._F
+
+        card = self._make_card(parent)
+        card.pack(fill="x")
+        self._card_header(card, "🧩 กิจกรรมเสริม",
+                          hint="เปิดหน้าจอในเกมให้ตรงกับกิจกรรมก่อนกด — template ชุดนี้นำเข้าจากบอทอื่น "
+                               "ถ้าหาปุ่มไม่เจอดู score ใน log แล้วแคปทับ")
+
+        # แถวควบคุม: จำนวน + ปุ่มหยุด + ป้ายสถานะ
+        row = tk.Frame(card, bg=C_CARD)
+        row.pack(fill="x", padx=12, pady=(4, 6))
+        tk.Label(row, text="จำนวน (0 = ไม่จำกัด):", bg=C_CARD, fg=C_MUTED,
+                 font=("Segoe UI", F(9), "bold")).pack(side="left")
+        count_border, self.act_count_entry = self._make_entry(row, self.act_count_var,
+                                                              width=6, justify="center")
+        count_border.pack(side="left", padx=(6, 10))
+        self.act_stop_btn = self._make_btn(row, "■ หยุดกิจกรรม", self._stop_activity,
+                                           bg="#ef4444", hover_bg="#dc2626", pady=3)
+        self.act_stop_btn.pack(side="left", ipadx=10)
+        tk.Label(row, textvariable=self.act_status_var, bg=C_CARD, fg=C_MUTED,
+                 font=("Segoe UI", F(9))).pack(side="left", padx=(12, 0))
+
+        # แถวตั้งค่าย่อยผงตอนกาชาคลังเต็ม — กี่ชิ้นต่อรอบ (บันทึกลง settings.json อัตโนมัติ)
+        row2 = tk.Frame(card, bg=C_CARD)
+        row2.pack(fill="x", padx=12, pady=(0, 6))
+        tk.Label(row2, text="กาชาคลังเต็ม → ย่อยครั้งละ (ชิ้น):", bg=C_CARD, fg=C_MUTED,
+                 font=("Segoe UI", F(9), "bold")).pack(side="left")
+        sb_border, self.act_salvage_batch_entry = self._make_entry(
+            row2, self.act_salvage_batch_var, width=6, justify="center")
+        sb_border.pack(side="left", padx=(6, 10))
+        self.act_salvage_batch_entry.bind("<FocusOut>", lambda e: self._save_salvage_batch())
+        self.act_salvage_batch_entry.bind("<Return>", lambda e: self._save_salvage_batch())
+        self.act_salvage_batch_saved_var = tk.StringVar(value="")
+        tk.Label(row2, textvariable=self.act_salvage_batch_saved_var, bg=C_CARD, fg=C_MUTED,
+                 font=("Segoe UI", F(9))).pack(side="left", padx=(4, 0))
+
+        # ปุ่มกิจกรรม 7 ปุ่ม (2 คอลัมน์) — rebuild ใหม่ทุกครั้งที่เปลี่ยนขนาด UI (ไม่เป็นไร
+        # เพราะ _apply_scale ถูกล็อกไม่ให้ทำงานระหว่างกิจกรรมรันอยู่)
+        grid = tk.Frame(card, bg=C_CARD)
+        grid.pack(fill="x", padx=8, pady=(2, 10))
+        grid.columnconfigure(0, weight=1, uniform="a")
+        grid.columnconfigure(1, weight=1, uniform="a")
+        items = [
+            ("💗 ส่งหัวใจ (เปิดหน้ารายชื่อเพื่อนก่อน)", "send_hearts"),
+            ("📬 รับหัวใจเมล (จากล็อบบี้)", "mail_hearts"),
+            ("👥 เพิ่มเพื่อน", "add_friends"),
+            ("🔮 กาชาสมบัติ (เปิดร้านสมบัติก่อน)", "treasure_gacha"),
+            ("♻️ ย่อยผง (เปิดตู้เก็บก่อน)", "salvage"),
+            ("💎 อัพเกรด +9 (เปิดหน้าสมบัติก่อน)", "treasure_upgrade"),
+            ("🎁 เปิดกล่องของขวัญ", "open_gift_box"),
+        ]
+        self._act_btns = []
+        for i, (text, key) in enumerate(items):
+            b = self._make_btn(grid, text, lambda k=key: self._start_activity(k), pady=5)
+            b.grid(row=i // 2, column=i % 2, sticky="ew", padx=4, pady=3)
+            self._act_btns.append(b)
+
+    def _save_salvage_batch(self):
+        """บันทึกจำนวนชิ้นที่ย่อยต่อรอบตอนกาชาคลังเต็ม → config + settings.json (มีผลทันที ไม่ต้อง restart)
+        ค่าต่ำสุด 1 (0/ติดลบ/ไม่ใช่ตัวเลข → ปัดเป็น 1 กันย่อย 0 ชิ้นแล้ววนไม่รู้จบ)"""
+        try:
+            n = max(1, int(self.act_salvage_batch_var.get().strip() or "1"))
+        except ValueError:
+            n = 1
+        self.act_salvage_batch_var.set(str(n))   # normalize ค่าในช่องให้ตรง
+        config.ACT_SALVAGE_BATCH = n             # อัพเดตค่าที่บอทอ่านตอนรัน (มีผลด่านถัดไปทันที)
+        if config.save_settings({"ACT_SALVAGE_BATCH": n}):
+            self.act_salvage_batch_saved_var.set(f"✓ ย่อยครั้งละ {n} • {time.strftime('%H:%M:%S')}")
+        else:
+            self.act_salvage_batch_saved_var.set("❌ บันทึกไม่สำเร็จ")
+
+    # ============================================================
     # ตั้งค่าบูสต์: บันทึกอัตโนมัติ + สรุป + พรีเซ็ต
     # ============================================================
     def _refresh_boost_summary(self):
@@ -777,8 +864,8 @@ class App:
 
     def _apply_scale(self):
         """เปลี่ยนขนาด UI — rebuild หน้าจอทันที (เฉพาะตอนบอทไม่รัน) + จำค่าลง settings.json"""
-        if self.running or self.testing:
-            self._enqueue("[app] เปลี่ยนขนาด UI ได้ตอนบอทหยุดอยู่เท่านั้น")
+        if self.running or self.testing or self.act_running:
+            self._enqueue("[app] เปลี่ยนขนาด UI ได้ตอนบอท/กิจกรรมหยุดอยู่เท่านั้น")
             return
         try:
             val = float(self.scale_var.get())
@@ -860,7 +947,7 @@ class App:
     def _tick_adb(self):
         """เช็คไฟสถานะ ADB ทุก 15 วิ (เฉพาะตอนบอทไม่รัน — ตอนรันใช้การอ่านจาก log แทน)"""
         if (not self.running and not self.testing and not self.closing
-                and not self._adb_checking):
+                and not self.act_running and not self._adb_checking):
             self._adb_checking = True
 
             def worker():
@@ -880,7 +967,16 @@ class App:
     # log (thread-safe ผ่าน queue)
     # ============================================================
     def _enqueue(self, msg):
-        self.log_queue.put(str(msg) + "\n")
+        # เติมเวลา [HH:MM:SS.mmm] หน้าทุกบรรทัด — ไว้ดูว่าสเต็ปไหนใช้เวลานาน
+        # (ดึง \n ที่คั่นหัวข้อออกไว้หน้าสุดก่อน ไม่งั้น timestamp ไปอยู่หน้าบรรทัดว่าง)
+        msg = str(msg)
+        lead = ""
+        while msg.startswith("\n"):
+            lead += "\n"
+            msg = msg[1:]
+        now = time.time()
+        ts = time.strftime("%H:%M:%S", time.localtime(now)) + f".{int((now % 1) * 1000):03d}"
+        self.log_queue.put(f"{lead}[{ts}] {msg}\n")
 
     def _safe_after(self, fn):
         """สั่งงาน main thread อย่างปลอดภัย (กันเรียกหลังหน้าต่างถูกปิด/ทำลาย)"""
@@ -913,8 +1009,9 @@ class App:
                 elif "[app]" in msg_lower or "[กู้]" in msg:
                     tag = "tag_app"
 
-                # ตอนบอทรัน ใช้ log เป็นตัวบอกไฟ ADB (เช็คตรง ๆ ระหว่างรันจะไปกวน adb)
-                if self.running:
+                # ตอนบอท/กิจกรรมรัน ใช้ log เป็นตัวบอกไฟ ADB (เช็คตรง ๆ ระหว่างรันจะไปกวน adb
+                # และ _tick_adb ถูกข้ามระหว่าง act_running — ไม่งั้นไฟค้างเขียวทั้งที่หลุด)
+                if self.running or self.act_running:
                     if "device offline" in msg_lower or "แคปหน้าจอไม่ได้" in msg or "แคปจอพลาด" in msg:
                         self._set_adb_dot("bad")
                     elif "[coins]" in msg_lower or "[ok]" in msg_lower:
@@ -964,6 +1061,9 @@ class App:
         if self.testing:
             self._enqueue("[app] กำลังทดสอบ/กู้อยู่แล้ว — รอผลสักครู่")
             return
+        if self.act_running:
+            self._enqueue("[app] กิจกรรมเสริมกำลังรันอยู่ — หยุดกิจกรรมก่อนค่อยทดสอบ ADB")
+            return
         self._apply_config()
         self._enqueue("[app] กำลังทดสอบการเชื่อมต่อ...")
         self.testing = True
@@ -999,6 +1099,9 @@ class App:
             return
         if self.testing:
             self._enqueue("[app] กำลังทดสอบ/กู้อยู่แล้ว — รอผลสักครู่")
+            return
+        if self.act_running:
+            self._enqueue("[app] กิจกรรมเสริมกำลังรันอยู่ — หยุดกิจกรรมก่อนค่อยกู้การเชื่อมต่อ")
             return
         self._apply_config()
         self.testing = True
@@ -1072,6 +1175,9 @@ class App:
     def start_bot(self):
         if self.testing:
             self._enqueue("[app] กำลังทดสอบ/กู้การเชื่อมต่ออยู่ — รอให้เสร็จก่อนค่อยเริ่มบอท")
+            return
+        if self.act_running:
+            self._enqueue("[app] กิจกรรมเสริมกำลังรันอยู่ — กด ■ หยุดกิจกรรม ก่อนค่อยเริ่มบอท")
             return
         self._apply_config()
 
@@ -1168,6 +1274,102 @@ class App:
         self._set_status("stopped")
 
     # ============================================================
+    # กิจกรรมเสริม (แท็บ 🧩) — รันทีละกิจกรรม แยกจากบอทหลัก
+    # ============================================================
+    def _set_act_btns(self, state):
+        """เปิด/ปิดปุ่มกิจกรรมทั้ง 7 พร้อมสี (สไตล์เดียวกับ _set_conn_btns)"""
+        for b in getattr(self, "_act_btns", []):
+            try:
+                if state == "disabled":
+                    b.config(state="disabled", bg=C_CARD, fg=C_DIM)
+                else:
+                    b.config(state="normal", bg=C_BLUE, fg="#ffffff")
+            except tk.TclError:
+                pass
+
+    def _start_activity(self, key):
+        if self.running:
+            self._enqueue("[app] หยุดบอทหลักก่อน แล้วค่อยรันกิจกรรมเสริม")
+            return
+        if self.testing:
+            self._enqueue("[app] กำลังทดสอบ/กู้การเชื่อมต่ออยู่ — รอให้เสร็จก่อนค่อยรันกิจกรรม")
+            return
+        if self.act_running:
+            self._enqueue("[app] มีกิจกรรมรันอยู่ — กด ■ หยุดกิจกรรม ก่อน")
+            return
+        self._apply_config()
+        self._save_salvage_batch()   # ยึดค่าย่อย/รอบ ในช่องล่าสุด (เผื่อยังไม่ blur ออกจากช่อง)
+        try:
+            count = max(0, int(self.act_count_var.get().strip() or "0"))
+        except ValueError:
+            count = 0
+
+        labels = {"send_hearts": "💗 ส่งหัวใจ", "mail_hearts": "📬 รับหัวใจเมล",
+                  "add_friends": "👥 เพิ่มเพื่อน", "treasure_gacha": "🔮 กาชาสมบัติ",
+                  "salvage": "♻️ ย่อยผง", "treasure_upgrade": "💎 อัพเกรด +9",
+                  "open_gift_box": "🎁 เปิดกล่องของขวัญ"}
+        label = labels.get(key, key)
+
+        # Event ใหม่ทุกครั้ง — อันเก่าถูก set ค้างไว้จากการหยุดรอบก่อน
+        self.act_stop_event = threading.Event()
+        self.act_running = True
+        self._set_act_btns("disabled")
+        self.toggle_btn.config(state="disabled")
+        # กันกดเปลี่ยนขนาด UI ระหว่างกิจกรรม — ไฮไลต์ pill จะเลื่อนแต่ _apply_scale ไม่ทำงาน
+        self.scale_selector.set_state("disabled")
+        self.act_status_var.set(f"กำลังรัน: {label}...")
+
+        def worker():
+            try:
+                if not self.adb.connected():
+                    self._enqueue("[app] ❌ เชื่อมต่อ ADB ไม่ได้ — ยกเลิกกิจกรรม "
+                                  "(ลองปุ่ม 🔌 กู้การเชื่อมต่อ ในแท็บ ⚙️ ระบบ)")
+                    return
+                acts = Activities(self.adb, log=self._enqueue,
+                                  stop_event=self.act_stop_event)
+                if key == "send_hearts":
+                    acts.send_hearts()
+                elif key == "mail_hearts":
+                    acts.mail_hearts()
+                elif key == "add_friends":
+                    acts.add_friends(count)
+                elif key == "treasure_gacha":
+                    acts.treasure_gacha(count)
+                elif key == "salvage":
+                    acts.salvage(count)
+                elif key == "treasure_upgrade":
+                    acts.treasure_upgrade()
+                elif key == "open_gift_box":
+                    acts.open_gift_box(count)
+            except Exception as e:
+                import traceback
+                self._enqueue(f"[app] ❌ กิจกรรมหยุดเพราะข้อผิดพลาด: {e}\n{traceback.format_exc()}")
+            finally:
+                self.act_running = False
+                self._safe_after(self._on_activity_done)
+
+        self.act_thread = threading.Thread(target=worker, daemon=True)
+        self.act_thread.start()
+
+    def _stop_activity(self):
+        if not self.act_running:
+            self._enqueue("[app] ไม่มีกิจกรรมกำลังรัน")
+            return
+        self.act_stop_event.set()
+        self._enqueue("[app] สั่งหยุดกิจกรรม → รอจบขั้นที่ค้างอยู่...")
+        self.act_status_var.set("กำลังหยุด...")
+
+    def _on_activity_done(self):
+        self._set_act_btns("normal")
+        if not self.running:   # กันเคสประหลาด — ห้ามปลดล็อกปุ่มบอทถ้าบอทหลักรันอยู่
+            try:
+                self.toggle_btn.config(state="normal")
+                self.scale_selector.set_state("normal")
+            except tk.TclError:
+                pass
+        self.act_status_var.set("จบแล้ว — ดูสรุปใน log")
+
+    # ============================================================
     # callbacks จากบอท (เรียกจาก bot thread → เด้งกลับ main thread)
     # ============================================================
     def _on_coins(self, coins, total):
@@ -1211,6 +1413,7 @@ class App:
     def on_close(self):
         self.closing = True
         self.stop_event.set()
+        self.act_stop_event.set()
         self.root.after(120, self.root.destroy)
 
 
